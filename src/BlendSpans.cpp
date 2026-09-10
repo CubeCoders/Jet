@@ -213,6 +213,77 @@ void PERF_CRITICAL blendRGB565Span(uint16_t* dst, const uint16_t* src, int count
         scalarRangeImpl<RGB565BlendMode::AddAlpha256>(dst, src, count, solidColor, alpha, flags, key); break;
     }
 }
+
+void RGB565ConstantBlend::prepare(uint16_t solidColor, uint8_t a, bool constantBackground) {
+    color = solidColor; alpha = a; background = constantBackground;
+    const unsigned fixedWeight = background ? 256u - a : a;
+    const unsigned variableWeight = background ? a : 256u - a;
+    // Preweight the constant operand, so each block only unpacks/multiplies
+    // its variable pixels. Even G6 sums stay <= 63*256, below signed16 max.
+    for (int i = 0; i < 4; ++i) {
+        lanes[i] = repeat16(variableWeight);
+        lanes[4+i] = repeat16((color >> 11) * fixedWeight);
+        lanes[8+i] = repeat16(((color >> 5) & 63) * fixedWeight);
+        lanes[12+i] = repeat16((color & 31) * fixedWeight);
+        lanes[16+i] = repeat16(256);
+    }
+}
+void PERF_CRITICAL RGB565ConstantBlend::blend(uint16_t* dst, const uint16_t* src, int count) const {
+    if (count <= 0) return;
+    const uint16_t* input = background ? src : dst;
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+    const auto s = (uintptr_t)input, d = (uintptr_t)dst;
+    // Equal alignment permits direct vector loads. Forward feedback and
+    // mismatched alignment use the existing helper with its scalar guards.
+    if (count >= 16 && ((s ^ d) & 15) == 0 && !(s < d && d - s < (uintptr_t)count * 2)) {
+        auto scalar = [&]() {
+            const unsigned v = *input++;
+            const unsigned sw = background ? alpha : 256u - alpha;
+            const unsigned cw = 256u - sw;
+            *dst++=(uint16_t)(((((v>>11)*sw+(color>>11)*cw)>>8)<<11)
+                | (((((v>>5)&63)*sw+((color>>5)&63)*cw)>>8)<<5)
+                | (((v&31)*sw+(color&31)*cw)>>8));
+            --count;
+        };
+        while (count && ((uintptr_t)dst & 15)) scalar();
+        int blocks = count / 8;
+        const int pixels = blocks * 8;
+        uint32_t saved, tmp;
+#define CSHIFT(N) "movi %[tmp], " N "\n\twsr %[tmp], sar\n\t"
+#define CCHANNEL(SH,OFF,MASK) \
+        CSHIFT(SH) "ee.vsr.32 q5, q0\n\t" \
+        "addi %[tmp], %[masks], " MASK "\n\tee.vld.128.ip q4, %[tmp], 0\n\t" \
+        "ee.andq q5, q5, q4\n\t" CSHIFT("0") \
+        "ee.vmul.u16 q5, q5, q2\n\t" \
+        "addi %[tmp], %[params], " OFF "\n\tee.vld.128.ip q3, %[tmp], 0\n\t" \
+        "ee.vadds.s16 q5, q5, q3\n\t" CSHIFT("16") \
+        "ee.vmul.u16 q5, q5, q6\n\t" CSHIFT(SH) "ee.vsl.32 q5, q5\n\t"
+        // Own all vector state inside this block; restore the scalar shift
+        // register before returning to C++. No QR state crosses calls.
+        __asm__ volatile (
+            "rsr %[saved], sar\n\t"
+            "mov %[tmp], %[params]\n\tee.vld.128.ip q2, %[tmp], 0\n\t"
+            "addi %[tmp], %[params], 64\n\tee.vld.128.ip q6, %[tmp], 0\n\t"
+            "9:\n\tee.vld.128.ip q0, %[input], 16\n\t"
+            CCHANNEL("11","16","0") "ee.orq q7, q5, q5\n\t"
+            CCHANNEL("5","32","16") "ee.orq q7, q7, q5\n\t"
+            CCHANNEL("0","48","0") "ee.orq q7, q7, q5\n\t"
+            "ee.vst.128.ip q7, %[dst], 16\n\t"
+            "addi %[blocks], %[blocks], -1\n\tbnez %[blocks], 9b\n\t"
+            "wsr %[saved], sar\n\t"
+            : [saved] "=&r"(saved), [tmp] "=&r"(tmp), [blocks] "+&r"(blocks),
+              [input] "+&r"(input), [dst] "+&r"(dst)
+            : [params] "r"(lanes), [masks] "r"(channelMasks) : "memory");
+#undef CCHANNEL
+#undef CSHIFT
+        count -= pixels;
+        while (count) scalar();
+        return;
+    }
+#endif
+    blendRGB565Span(dst, background ? src : nullptr, count, color, alpha,
+        RGB565BlendMode::Alpha256, background ? BlendConstantBackground : 0);
+}
 void PERF_CRITICAL blendRGB565ScaledSpan(uint16_t* dst, const uint16_t* src, int count,
                                         int sourceX256, int step256, uint8_t alpha,
                                         RGB565BlendMode mode, uint8_t flags, uint16_t key) {

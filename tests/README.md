@@ -56,7 +56,8 @@ across the three layouts with 724 boundary differences and zero errors.
 Scene's transform, near-plane clipping, culling, sort and band replay. It
 sweeps all near-plane masks and culling modes, reversed winding, repeated
 and negative UVs, geometry/texture LOD, shading modes, checkerboard and
-interlacing. It asserts that two bands reproduce a whole-frame raster pass.
+interlacing. It runs two concurrent bands at varying odd/even boundaries and
+asserts whole-frame pixel equivalence and unique rasterized-triangle counts.
 
 Build against the same `JetConfig.hpp` and sources as the renderer under
 test (for this fixture, use `Z_BUFFERING=0`). For example:
@@ -133,3 +134,16 @@ sky fallback, ripples, band clipping and interlacing. Use the source list
 for `affine_textures.cpp` above. Build a saved renderer and the candidate
 with identical headers/configuration, then pass the saved hex fingerprint
 as argv[1] to assert equivalence. Test full width, half width and fields.
+
+`constant_blend.cpp` checks the prepared constant-colour /256 SIMD kernel
+against independent channel equations. It covers every channel pair at every
+alpha, both constant foreground and background, all pixel alignments, tails,
+and forward/reverse/in-place framebuffer feedback: 13,057,920 pixel/guard
+comparisons. Build with `BlendSpans.cpp`, as for `blend_spans.cpp`. On ESP,
+call `runConstantBlendChecks()` in temporary test firmware; it also times
+3,000 aligned 240-pixel rows against the existing generic SIMD helper.
+
+Define `JET_TEST_POSITION_CACHE=1` when compiling `scene_texture_queue.cpp`
+to exercise cached/uncached positions and LODs, cache rebuilding after direct
+edits, Object copies and invalidation by geometry-changing helpers. Its
+fingerprint must still match the uncached baseline in every configuration.

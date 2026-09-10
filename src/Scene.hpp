@@ -74,8 +74,11 @@ public:
     /// @brief Get the active ambient light.
     AmbientLight* getAmbientLight() { return ambientLight; }
 
+    using RasterExecutor = void (*)(Scene&);
     /// @brief Run the full pipeline for one frame: cull, transform, rasterise, post-FX.
-    void render();
+    /// An optional frontend executor replaces the full-screen raster pass.
+    /// It must join its workers and publish statistics before returning.
+    void render(RasterExecutor executor = nullptr);
 
     /// @brief Phase 1 of split rendering: clear [yBandMin, yBandMax) on the rasteriser,
     ///        transform and depth-sort all objects. Does NOT rasterise triangles.
@@ -90,7 +93,10 @@ public:
     ///        concurrent calls with non-overlapping y ranges are safe when Z_BUFFERING==0.
     ///
     ///        May be called from multiple threads simultaneously with disjoint bands.
-    void rasterizeBand(int yMin, int yMax);
+    // Parallel callers supply separate zeroed flags (lastFrameDrawnTriangles
+    // bytes each), then OR them after joining to count unique triangles.
+    // With flags supplied this does not write shared frame statistics.
+    void rasterizeBand(int yMin, int yMax, uint8_t* triangleFlags = nullptr);
 
     /// @brief Clear only the rows [yMin, yMax) of the current framebuffer without
     ///        re-running the transform or sort pipeline. Use this for bands 1+ when the

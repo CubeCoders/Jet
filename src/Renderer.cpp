@@ -929,9 +929,9 @@ namespace Renderer
         }
 #endif
 
-        // Interlaced mode uses renderEvenLines as a row-start offset; checkerboard
-        // mode renders every row (the per-pixel column skip happens inside the x-loop).
-        int yStart = interlacedMode ? (minY + (int)renderEvenLines) : minY;
+        // Preserve field parity when clipping moves minY onto an odd band
+        // boundary. Checkerboard mode renders every row and skips columns.
+        int yStart = interlacedMode ? (minY + ((minY ^ (int)renderEvenLines) & 1)) : minY;
         Detail::TriangleSpans spans({v1.position.x, v1.position.y},
                                    {v2.position.x, v2.position.y},
                                    {v3.position.x, v3.position.y}, yStart, inc);
@@ -954,6 +954,19 @@ namespace Renderer
         // Specialize once per triangle so the simple-span build can discard
         // unused barycentric row updates on the incremental path. Inlining
         // also keeps both row loops in drawTriangle's IRAM section on ESP32.
+#if JET_FAST_SIMPLE_SPANS && !SCREEN_DOOR_ALPHA
+        RGB565ConstantBlend constantBlend;
+        bool constantReady = false;
+        auto blendConstant = [&](uint16_t* dst, const uint16_t* src, int n,
+                                 uint16_t col, uint8_t a, bool background) {
+            // Colour/mode are fixed for this triangle; water's top-edge
+            // fade can change alpha between rows. Prepare only on demand.
+            if (!constantReady || constantBlend.alpha != a) {
+                constantBlend.prepare(col, a, background); constantReady = true;
+            }
+            constantBlend.blend(dst, src, n);
+        };
+#endif
         auto rasterRows = [&](auto useSpans)
 #if defined(__GNUC__)
             __attribute__((always_inline))
@@ -1303,9 +1316,8 @@ namespace Renderer
                             framebuffer[bufferIndex + i] = blendRGB565(material->color,
                                 srcBuf[mirrorIdx + i], waterReflectAlpha);
                     } else {
-                        blendRGB565Span(framebuffer + bufferIndex, srcBuf + mirrorIdx,
-                            spanCount, material->color, waterReflectAlpha,
-                            RGB565BlendMode::Alpha256, BlendConstantBackground);
+                        blendConstant(framebuffer + bufferIndex, srcBuf + mirrorIdx,
+                            spanCount, material->color, waterReflectAlpha, true);
                     }
                 } else if (isAdditive) {
                     // Saturating-add: source scaled by alpha then added to destination.
@@ -1330,8 +1342,8 @@ namespace Renderer
                 } else {
                     const int count = ((xEnd - xStart) >> 1) + 1;
                     if (count >= 32) {
-                        blendRGB565Span(framebuffer + bufferIndex, nullptr,
-                            count, color, alpha, RGB565BlendMode::Alpha256);
+                        blendConstant(framebuffer + bufferIndex, nullptr,
+                            count, color, alpha, false);
                     } else {
                         for (int i = 0; i < count; ++i)
                             framebuffer[bufferIndex + i] = blendRGB565(framebuffer[bufferIndex + i], color, alpha);

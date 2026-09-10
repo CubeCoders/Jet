@@ -4,9 +4,39 @@
 #include "Scene.hpp"
 #include <cstdio>
 #include <cstdlib>
+#include <thread>
 using namespace Renderer;
 
+#if JET_TEST_POSITION_CACHE
+static bool checkPositionCache() {
+    Object mesh;
+    mesh.addVertex({{1,2,3}});
+    if (!mesh.cachePositions() || !mesh.cachedPositions()) return false;
+    Object copy = mesh;
+    mesh.vertices[0].position.x = 17;
+    mesh.invalidatePositions();
+    if (mesh.cachedPositions() || copy.cachedPositions()[0].x != 1) return false;
+    if (!mesh.cachePositions() || mesh.cachedPositions()[0].x != 17) return false;
+    mesh.addVertex({{4,5,6}});
+    if (mesh.cachedPositions()) return false;
+    if (!mesh.cachePositions()) return false;
+    mesh.bakeScale(2,1);
+    if (mesh.cachedPositions()) return false;
+    if (!mesh.cachePositions() || mesh.cachedPositions()[0].x != 34) return false;
+    mesh.rotation = {0,90,0}; mesh.bakeRotation();
+    if (mesh.cachedPositions()) return false;
+    if (!mesh.cachePositions()) return false;
+    mesh.calculateBoundingBox();
+    if (mesh.cachedPositions()) return false;
+    mesh.vertices.clear();
+    return mesh.cachePositions() && !mesh.cachedPositions();
+}
+#endif
+
 int main(int argc, char** argv) {
+#if JET_TEST_POSITION_CACHE
+    if (!checkPositionCache()) { std::printf("Position cache failure\n"); return 1; }
+#endif
     constexpr int W = 160, H = 120;
     initializeTrigTables();
     std::vector<uint16_t> fb(W * H), z(W * H, 65535);
@@ -35,6 +65,9 @@ int main(int argc, char** argv) {
     backdrop.position.z = 300;
     backdrop.cullingMode = CullingMode::NO_CULLING;
     backdrop.calculateBoundingBox();
+#if JET_TEST_POSITION_CACHE
+    if (!backdrop.cachePositions()) return 1;
+#endif
     Scene scene(fb.data(), z.data(), W, H);
     scene.setCamera(&camera); scene.setDirectionalLight(&light);
     scene.setAmbientLight(&ambient); scene.addObject(&object);
@@ -62,6 +95,9 @@ int main(int argc, char** argv) {
         object.zBias = (int8_t)((f % 9 - 4) * 10);
         object.cullingMode = (CullingMode)(f / 8 % 3);
         object.calculateBoundingBox(); lod.calculateBoundingBox();
+#if JET_TEST_POSITION_CACHE
+        if (f % 3 != 0 && (!object.cachePositions() || !lod.cachePositions())) return 1;
+#endif
         scene.lodScale = f % 5 == 0 ? 200 : 0;
         raster->textureLodEnabled = f % 3 == 0;
         raster->interlacedMode = FIELD_BUFFERS || f % 7 == 0;
@@ -73,10 +109,20 @@ int main(int argc, char** argv) {
         scene.rasterizeBand(0, H);
         submitted += scene.lastFrameDrawnTriangles;
         const auto whole = fb;
+        const int wholeCount = scene.lastFrameRasterizedTriangles;
         std::fill(fb.begin(), fb.end(), 0);
         std::fill(z.begin(), z.end(), 65535);
-        scene.rasterizeBand(0, H / 2);
-        scene.rasterizeBand(H / 2, H);
+        std::vector<uint8_t> upper(std::max(1, scene.lastFrameDrawnTriangles), 0), lower(upper.size(), 0);
+        // Odd boundaries exercise the field parity adjustment too.
+        const int split = 1 + (f * 7) % (H - 1);
+        std::thread worker([&]() { scene.rasterizeBand(split, H, lower.data()); });
+        scene.rasterizeBand(0, split, upper.data());
+        worker.join();
+        int unique = 0;
+        for (size_t i = 0; i < upper.size(); ++i) unique += (upper[i] | lower[i]) != 0;
+        if (unique != wholeCount || scene.lastFrameRasterizedTriangles != wholeCount) {
+            std::printf("Band count mismatch at frame %d: %d != %d\n", f, unique, wholeCount); return 1;
+        }
         if (fb != whole) { std::printf("Band mismatch at frame %d\n", f); return 1; }
         for (auto pixel : fb) { hash ^= pixel; hash *= 1099511628211ull; }
         scene.advanceFrameCounter();

@@ -2,6 +2,11 @@
 #include "Light.hpp"
 #include "TrigLUT.hpp"
 #include <cmath>
+#include <cstdlib>
+#include <new>
+#if defined(ESP_PLATFORM)
+#include "esp_heap_caps.h"
+#endif
 
 namespace Renderer
 {
@@ -10,7 +15,32 @@ namespace Renderer
     {
     }
 
+    bool Object::cachePositions() {
+        static_assert(std::is_trivially_destructible<Vector3>::value,
+                      "Position cache allocation requires trivial destruction");
+        invalidatePositions();
+        if (vertices.empty()) return true;
+        if (vertices.size() > SIZE_MAX / sizeof(Vector3)) return false;
+        const size_t bytes = vertices.size() * sizeof(Vector3);
+#if defined(ESP_PLATFORM) && defined(CONFIG_SPIRAM)
+        void* storage = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
+        void* storage = std::malloc(bytes);
+#endif
+        if (!storage) return false;
+        auto* positions = static_cast<Vector3*>(storage);
+        for (size_t i = 0; i < vertices.size(); ++i)
+            new (positions + i) Vector3(vertices[i].position);
+        // Vector3 is trivially destructible; release the raw allocation once
+        // the last Object sharing this immutable stream lets it go.
+        positionCache = std::shared_ptr<const Vector3>(positions,
+            [](const Vector3* p) { std::free(const_cast<Vector3*>(p)); });
+        positionCacheSize = vertices.size();
+        return true;
+    }
+
     void Object::calculateBoundingBox() {
+        invalidatePositions();
         if (vertices.empty()) {
             boundingBoxMin = {0, 0, 0};
             boundingBoxMax = {0, 0, 0};
@@ -94,6 +124,7 @@ namespace Renderer
 
     void Object::addVertex(const Vertex &vertex)
     {
+        invalidatePositions();
         vertices.push_back(vertex);
     }
 

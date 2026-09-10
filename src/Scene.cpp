@@ -783,7 +783,7 @@ void Scene::clearBand(int yMin, int yMax) {
     clearBuffers();
 }
 
-void Scene::rasterizeBand(int yMin, int yMax) {
+void Scene::rasterizeBand(int yMin, int yMax, uint8_t* triangleFlags) {
     // Create a thread-local copy of the rasteriser so each band worker has
     // its own yBandMin/yBandMax. Only framebuffer/zbuffer ptrs are shared;
     // writes go to non-overlapping y regions so there is no write race.
@@ -798,6 +798,8 @@ void Scene::rasterizeBand(int yMin, int yMax) {
     int rasterized = 0;
     for (const int32_t idx : renderOrder) {
         const RenderTri& t = renderQueue[idx];
+        if (std::max({t.v1.position.y, t.v2.position.y, t.v3.position.y}) < yMin ||
+            std::min({t.v1.position.y, t.v2.position.y, t.v3.position.y}) >= yMax) continue;
 #if MAX_PICK_QUERIES > 0
         bandRast.currentPickObject        = t.sourceObject;
         bandRast.currentPickTriangleIndex = t.sourceTriangleIndex;
@@ -819,15 +821,17 @@ void Scene::rasterizeBand(int yMin, int yMax) {
                                    (int)t.zBias, t.objAlpha,
                                    t.brightnessPrecomputed, t.avgZ)) {
             ++rasterized;
+            if (triangleFlags) triangleFlags[idx] = 1;
         }
     }
-    lastFrameRasterizedTriangles = rasterized;
+    if (!triangleFlags) lastFrameRasterizedTriangles = rasterized;
 }
 
-void Scene::render() {
+void Scene::render(RasterExecutor executor) {
     if (!camera) return;
     prepareFrame();
-    rasterizeBand(0, screenHeight);
+    if (executor) executor(*this);
+    else rasterizeBand(0, screenHeight);
 
     // Checkerboard reconstruction: fill in opposite-parity pixels from the
     // freshly-rendered current-parity neighbours so PostFX sees a fully-populated
@@ -1190,8 +1194,8 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
     // Share exactly the same transform/rounding with the clipping slow path.
     // Camera Z already lives in PipelineVertex. Recompute camera X/Y only
     // for straddling faces instead of writing a second array for every vertex.
-    auto cameraPosition = [&](const Object::Vertex& srcVert) -> Vector3 {
-        Vector3 pos(srcVert.position);
+    auto cameraPosition = [&](const Vector3& sourcePosition) -> Vector3 {
+        Vector3 pos(sourcePosition);
 
         // Y-axis (cylindrical) billboard: pre-rotate the vertex offset
         // by +camRotY around Y so the camera's Y rotation below cancels
@@ -1227,10 +1231,11 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
     };
 
     // Transform vertices and normals, writing only live projected attributes.
+    const Vector3* packedPositions = meshSource->cachedPositions();
     for (size_t vi = 0; vi < vertCount; ++vi) {
         const Object::Vertex& srcVert = meshSource->vertices[vi];
         PipelineVertex& dst = transformedVertices[vi];
-        const Vector3 pos = cameraPosition(srcVert);
+        const Vector3 pos = cameraPosition(packedPositions ? packedPositions[vi] : srcVert.position);
 #if LIGHTING
         Vector3 normal(srcVert.normal);
         // Normals use the combined ROTATION only — no translation. The
@@ -1499,9 +1504,9 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
 
         // Straddling near plane — produce a clipped polygon (3 or 4 verts)
         // while preserving winding order of the original triangle.
-        const Vector3 cA = cameraPosition(meshSource->vertices[triangle.v1]);
-        const Vector3 cB = cameraPosition(meshSource->vertices[triangle.v2]);
-        const Vector3 cC = cameraPosition(meshSource->vertices[triangle.v3]);
+        const Vector3 cA = cameraPosition(meshSource->vertices[triangle.v1].position);
+        const Vector3 cB = cameraPosition(meshSource->vertices[triangle.v2].position);
+        const Vector3 cC = cameraPosition(meshSource->vertices[triangle.v3].position);
         RenderVertex clippedInput[3] = { vA.expand(), vB.expand(), vC.expand() };
 #if TEXTURE_MAPPING
         if (!triangle.colorBaked && triangle.material && triangle.material->diffuseMap) {

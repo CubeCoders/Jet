@@ -19,6 +19,20 @@ void blendRGB565Span(uint16_t* dst, const uint16_t* src, int count,
                     uint16_t solidColor, uint8_t alpha, RGB565BlendMode mode,
                     uint8_t flags = 0, uint16_t key = 0);
 
+// Prepared /256 blend with one uniform colour. The variable pixels are
+// foreground for water, or destination for a solid translucent triangle.
+// Caller may reuse this state across spans with the same colour and alpha.
+// Call prepare() before blend(). Source is required only for background=true;
+// both modes accept native RGB565 and preserve forward framebuffer feedback.
+struct alignas(16) RGB565ConstantBlend {
+    uint32_t lanes[20];
+    uint16_t color;
+    uint8_t alpha;
+    bool background;
+    void prepare(uint16_t solidColor, uint8_t a, bool constantBackground);
+    void blend(uint16_t* dst, const uint16_t* src, int count) const;
+};
+
 // Nearest-neighbour sprite row, using the compositor's original 8-bit fixed
 // point source coordinate and step. Overlapping spans retain forward order.
 void blendRGB565ScaledSpan(uint16_t* dst, const uint16_t* src, int count,

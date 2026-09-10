@@ -3,6 +3,7 @@
 
 #include <vector>
 #include <cstdint>
+#include <memory>
 #include "Texture.hpp"
 #include "Material.hpp"
 #include "Shader.hpp"
@@ -62,6 +63,19 @@ public:
     std::vector<Vertex> vertices;       ///< Mesh vertices.
     std::vector<int> indices;           ///< Index buffer (unused by the default rasteriser).
     std::vector<Triangle> triangles;    ///< Mesh triangles.
+
+    /// Build an optional packed stream for a mesh whose positions are static.
+    /// UVs, normals and object transforms remain live. Direct edits to public
+    /// vertices require invalidatePositions() or another cachePositions() call.
+    /// addVertex(), calculateBoundingBox() and baking helpers invalidate it.
+    /// Uses PSRAM on ESP builds with PSRAM; returns false if the position
+    /// buffer cannot be allocated, leaving the ordinary vertex path active.
+    /// Copies of an Object share the immutable cache until either invalidates it.
+    bool cachePositions();
+    const Vector3* cachedPositions() const {
+        return positionCacheSize == vertices.size() ? positionCache.get() : nullptr;
+    }
+    void invalidatePositions() { positionCache.reset(); positionCacheSize = 0; }
 
     Vector3 boundingBoxMin = {0,0,0};   ///< Local-space AABB minimum (recomputed by calculateBoundingBox).
     Vector3 boundingBoxMax = {0,0,0};   ///< Local-space AABB maximum.
@@ -265,6 +279,8 @@ public:
     void bakeFlatLighting(const DirectionalLight* directionalLight,
                           const AmbientLight*     ambientLight);
 private:
+    std::shared_ptr<const Vector3> positionCache;
+    size_t positionCacheSize = 0;
 
 };
 
