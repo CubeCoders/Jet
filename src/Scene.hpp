@@ -190,22 +190,56 @@ public:
     /// @}
 
 private:
+    // UVs are immutable mesh attributes, not transformed attributes. Keep
+    // them out of the scratch vertices and the common triangle queue.
+    struct PipelineVertex {
+        Vector3 position;
+#if LIGHTING
+        Vector3 normal;
+        uint16_t lambertBrightness = 0;
+#endif
+        template<class V> void assign(const V& v) {
+            position = v.position;
+#if LIGHTING
+            normal = v.normal;
+            lambertBrightness = v.lambertBrightness;
+#endif
+        }
+        RenderVertex expand() const {
+            RenderVertex v;
+            v.position = position;
+#if LIGHTING
+            v.normal = normal;
+            v.lambertBrightness = lambertBrightness;
+#endif
+            return v;
+        }
+    };
+#if TEXTURE_MAPPING
+    struct TriangleUV { Vector2 a, b, c; };
+    std::vector<TriangleUV> textureQueue;
+#endif
     struct RenderTri {
-        RenderVertex v1, v2, v3;
+        PipelineVertex v1, v2, v3;
+#if TEXTURE_MAPPING
+        uint32_t uvIndex;
+#endif
         Material* material;
         int32_t avgZ;
-        bool ignoreZBuffer;
-        bool noWriteZBuffer;
-        int8_t zBias;
-        // Per-object alpha multiplier (255 = no per-object fade); folded
-        // into the per-pixel screen-door alpha at raster time.
-        uint8_t objAlpha;
+        // Pack the three booleans together so the UV index replaces
+        // padding rather than growing the total payload of textured faces.
+        bool ignoreZBuffer : 1;
+        bool noWriteZBuffer : 1;
         // When true, v1/v2/v3.lambertBrightness has been precomputed in
         // object-local space by renderObject (see "objectLocalLight" path
         // in Scene.cpp). drawTriangle skips its own jetShadeBrightness
         // calls in that case and reads the cached values directly. Only
         // ever set for objects whose materials are all non-specular.
-        bool brightnessPrecomputed = false;
+        bool brightnessPrecomputed : 1;
+        int8_t zBias;
+        // Per-object alpha multiplier (255 = no per-object fade); folded
+        // into the per-pixel screen-door alpha at raster time.
+        uint8_t objAlpha;
 #if MAX_PICK_QUERIES > 0
         // Source object + ORIGINAL triangle index (in obj->triangles) for
         // pick attribution. Carried through the painter sort.
@@ -214,6 +248,10 @@ private:
 #endif
     };
     std::vector<RenderTri> renderQueue;
+    // One byte per triangle: background, 64 far-to-near depth buckets,
+    // then overlay. Sorting never needs to fetch the full triangle payload.
+    static constexpr int SortBucketCount = 66;
+    std::vector<uint8_t> renderBuckets;
     // Painter's-sort output as indices into renderQueue, rebuilt by
     // prepareFrame() each frame. Sorting (scattering) 4-byte indices
     // instead of whole RenderTri structs avoids a full second copy of the
@@ -240,6 +278,8 @@ private:
     uint16_t backcolor = 0;
     bool clearRenderBuffer = true;
     bool renderEvenLines = false;
+
+    float cameraMatrix[9] = {}; // Same composed camera transform for the entire frame.
 
     // Frustum side-plane normal lengths for the quick sphere cull in
     // cullObject(): |(fovFactor, ±screenW/2)| and |(fovFactor, ±screenH/2)|.

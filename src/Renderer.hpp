@@ -24,16 +24,15 @@
 
 namespace Renderer
 {
-/// @brief Slim render-time vertex flowing through the transform → queue →
-/// rasterise pipeline.
+/// @brief Vertex attributes consumed by the rasteriser.
 ///
 /// `Object::Vertex` is the authoring type: game/mesh code always has uv,
 /// normal, etc. available regardless of build configuration. RenderVertex
-/// is what the per-frame pipeline copies around (Scene's transformed-vertex
-/// scratch, the render queue, the painter's sort) — so it only carries the
-/// fields the configured pipeline actually consumes. With TEXTURE_MAPPING
-/// and LIGHTING both off this is just 12 bytes of position instead of 36,
-/// which roughly 3×'s the per-triangle queue/sort copy traffic savings.
+/// carries only fields consumed by the configured rasteriser. Scene uses
+/// a smaller internal vertex without UVs for transformation and queuing,
+/// stores UVs separately for textured faces, and assembles RenderVertex
+/// values just before rasterisation. With TEXTURE_MAPPING and LIGHTING
+/// both off, RenderVertex is just 12 bytes of position instead of 36.
 ///
 /// `position` is screen-space x/y with camera-space z after projection.
 struct RenderVertex {
@@ -202,6 +201,14 @@ class Rasterizer
             screenWidth  = newWidth;
             screenHeight = newHeight;
         }
+    private:
+        bool drawFlatTriangle(const RenderVertex&, const RenderVertex&, const RenderVertex&,
+            Material*, DirectionalLight*, AmbientLight*, bool, bool, bool, int, uint8_t, bool, int32_t);
+        bool drawTexturedTriangle(const RenderVertex&, const RenderVertex&, const RenderVertex&,
+            Material*, DirectionalLight*, AmbientLight*, bool, bool, bool, int, uint8_t, bool, int32_t);
+        template<bool SampleTextures>
+        bool drawTriangleImpl(const RenderVertex&, const RenderVertex&, const RenderVertex&,
+            Material*, DirectionalLight*, AmbientLight*, bool, bool, bool, int, uint8_t, bool, int32_t);
     };
 } // namespace Renderer
 

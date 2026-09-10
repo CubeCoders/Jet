@@ -1,6 +1,7 @@
 #include "Scene.hpp"
 #include "TrigLUT.hpp"
 #include "Renderer.hpp"
+#include "BlendSpans.hpp"
 #include "JetConfig.hpp"
 #include <cstring> // For memset
 #include <algorithm> // For std::min, std::max
@@ -129,9 +130,14 @@ bool Scene::cullObject(Object* obj,
             return false;   // fully inside — skip the 8-corner test
     }
 
-    int32_t objCosX = lookupCosI(obj->rotation.x), objSinX = lookupSinI(obj->rotation.x);
-    int32_t objCosY = lookupCosI(obj->rotation.y), objSinY = lookupSinI(obj->rotation.y);
-    int32_t objCosZ = lookupCosI(obj->rotation.z), objSinZ = lookupSinI(obj->rotation.z);
+    const bool rotated = obj->rotation.x != 0 || obj->rotation.y != 0 || obj->rotation.z != 0;
+    int32_t objCosX=FIXED_POINT_SCALE, objSinX=0, objCosY=FIXED_POINT_SCALE, objSinY=0;
+    int32_t objCosZ=FIXED_POINT_SCALE, objSinZ=0;
+    if (rotated) {
+        objCosX=lookupCosI(obj->rotation.x); objSinX=lookupSinI(obj->rotation.x);
+        objCosY=lookupCosI(obj->rotation.y); objSinY=lookupSinI(obj->rotation.y);
+        objCosZ=lookupCosI(obj->rotation.z); objSinZ=lookupSinI(obj->rotation.z);
+    }
 
     for (int i = 0; i < 8; ++i) {
         Vector3 p(
@@ -139,16 +145,19 @@ bool Scene::cullObject(Object* obj,
             (i & 2) ? bMax.y : bMin.y,
             (i & 4) ? bMax.z : bMin.z);
 
-        // Object rotation (X, Y, Z) — same order as renderObject
-        p.assign(p.x,
-                 (p.y * objCosX - p.z * objSinX) / FIXED_POINT_SCALE,
-                 (p.y * objSinX + p.z * objCosX) / FIXED_POINT_SCALE);
-        p.assign((p.x * objCosY + p.z * objSinY) / FIXED_POINT_SCALE,
-                  p.y,
-                 (-p.x * objSinY + p.z * objCosY) / FIXED_POINT_SCALE);
-        p.assign((p.x * objCosZ - p.y * objSinZ) / FIXED_POINT_SCALE,
-                 (p.x * objSinZ + p.y * objCosZ) / FIXED_POINT_SCALE,
-                  p.z);
+        // Static scenery needs no identity rotations at each corner.
+        if (rotated) {
+            // Object rotation (X, Y, Z) — same order as renderObject
+            p.assign(p.x,
+                     (p.y * objCosX - p.z * objSinX) / FIXED_POINT_SCALE,
+                     (p.y * objSinX + p.z * objCosX) / FIXED_POINT_SCALE);
+            p.assign((p.x * objCosY + p.z * objSinY) / FIXED_POINT_SCALE,
+                      p.y,
+                     (-p.x * objSinY + p.z * objCosY) / FIXED_POINT_SCALE);
+            p.assign((p.x * objCosZ - p.y * objSinZ) / FIXED_POINT_SCALE,
+                     (p.x * objSinZ + p.y * objCosZ) / FIXED_POINT_SCALE,
+                      p.z);
+        }
 
         // Translation
         p.add(objPos);
@@ -546,6 +555,46 @@ void Scene::prepareFrame() {
     int32_t camCosX, camSinX, camCosY, camSinY, camCosZ, camSinZ;
     camera->getRotationMatrix(camCosX, camSinX, camCosY, camSinY, camCosZ, camSinZ);
 
+    // Preserve the fixed-point composition and float conversion order,
+    // but perform them once per frame instead of once per visible object.
+    int32_t camM00, camM01, camM02;
+    int32_t camM10, camM11, camM12;
+    int32_t camM20, camM21, camM22;
+    {
+        const int32_t cx = camCosX, sx = camSinX;
+        const int32_t cy = camCosY, sy = camSinY;
+        const int32_t cz = camCosZ, sz = camSinZ;
+        // K = Rx * Ry
+        const int32_t k00 = cy;
+        const int32_t k01 = 0;
+        const int32_t k02 = sy;
+        const int32_t k10 = (int32_t)((int64_t)sx * sy / FIXED_POINT_SCALE);
+        const int32_t k11 = cx;
+        const int32_t k12 = (int32_t)(-(int64_t)sx * cy / FIXED_POINT_SCALE);
+        const int32_t k20 = (int32_t)(-(int64_t)cx * sy / FIXED_POINT_SCALE);
+        const int32_t k21 = sx;
+        const int32_t k22 = (int32_t)((int64_t)cx * cy / FIXED_POINT_SCALE);
+        // M = Rz * K
+        camM00 = (int32_t)(((int64_t)cz * k00 - (int64_t)sz * k10) / FIXED_POINT_SCALE);
+        camM01 = (int32_t)(((int64_t)cz * k01 - (int64_t)sz * k11) / FIXED_POINT_SCALE);
+        camM02 = (int32_t)(((int64_t)cz * k02 - (int64_t)sz * k12) / FIXED_POINT_SCALE);
+        camM10 = (int32_t)(((int64_t)sz * k00 + (int64_t)cz * k10) / FIXED_POINT_SCALE);
+        camM11 = (int32_t)(((int64_t)sz * k01 + (int64_t)cz * k11) / FIXED_POINT_SCALE);
+        camM12 = (int32_t)(((int64_t)sz * k02 + (int64_t)cz * k12) / FIXED_POINT_SCALE);
+        camM20 = k20;
+        camM21 = k21;
+        camM22 = k22;
+    }
+    cameraMatrix[0] = (float)camM00 / FIXED_POINT_SCALE;
+    cameraMatrix[1] = (float)camM01 / FIXED_POINT_SCALE;
+    cameraMatrix[2] = (float)camM02 / FIXED_POINT_SCALE;
+    cameraMatrix[3] = (float)camM10 / FIXED_POINT_SCALE;
+    cameraMatrix[4] = (float)camM11 / FIXED_POINT_SCALE;
+    cameraMatrix[5] = (float)camM12 / FIXED_POINT_SCALE;
+    cameraMatrix[6] = (float)camM20 / FIXED_POINT_SCALE;
+    cameraMatrix[7] = (float)camM21 / FIXED_POINT_SCALE;
+    cameraMatrix[8] = (float)camM22 / FIXED_POINT_SCALE;
+
     // Frustum side-plane normal lengths for cullObject's quick sphere
     // test. fovFactor changes at runtime (boost FOV kick) so refresh per
     // frame rather than caching at init.
@@ -566,6 +615,10 @@ void Scene::prepareFrame() {
                          + (int)(camSinX * camera->fovFactor / 1024.0f);
 
     renderQueue.clear();
+    renderBuckets.clear();
+#if TEXTURE_MAPPING
+    textureQueue.clear();
+#endif
     int drawnObjs = 0;
 
     for (auto obj : objects) {
@@ -693,7 +746,6 @@ void Scene::prepareFrame() {
     // win coplanar fights, but not so large that a biased decal draws
     // *over* geometry that's genuinely much closer (where avgZ differences
     // are thousands). Tune if the scale of the world changes significantly.
-    constexpr int32_t zBiasScale = 256;
     // Bucket sort: O(N) vs O(N log N) for std::sort. Separates the three
     // draw bands with one linear pass, then counting-sorts the normal band
     // by depth in K=64 buckets (farther triangles first). Within a bucket
@@ -707,37 +759,17 @@ void Scene::prepareFrame() {
         const int N = static_cast<int>(renderQueue.size());
         renderOrder.resize(N);
         if (N > 1) {
-            const int32_t nearZ  = camera->nearPlane;
-            const int32_t farZ   = camera->farPlane;
-            const int32_t zRange = (farZ > nearZ) ? (farZ - nearZ) : 1;
-            constexpr int K = 64;
-            int counts[K] = {};
-            int band0N = 0, band2N = 0;
-            // Pass 1: classify bands; histogram the normal band by depth.
-            for (const auto& t : renderQueue) {
-                if (t.noWriteZBuffer) { band0N++; continue; }
-                if (t.ignoreZBuffer)  { band2N++; continue; }
-                const int32_t key = t.avgZ - static_cast<int32_t>(t.zBias) * zBiasScale;
-                int b = static_cast<int>((static_cast<int64_t>(key - nearZ) * K) / zRange);
-                if (b < 0) b = 0; else if (b >= K) b = K - 1;
-                ++counts[b];
-            }
-            // Prefix sums — output bucket K-1 first (farthest first).
-            int pos[K];
-            pos[K - 1] = band0N;
-            for (int i = K - 2; i >= 0; --i) pos[i] = pos[i + 1] + counts[i + 1];
-            // Pass 2: scatter indices.
-            int b0 = 0;
-            int b2 = band0N + (N - band0N - band2N);
-            for (int32_t i = 0; i < N; ++i) {
-                const RenderTri& t = renderQueue[i];
-                if (t.noWriteZBuffer) { renderOrder[b0++] = i; continue; }
-                if (t.ignoreZBuffer)  { renderOrder[b2++] = i; continue; }
-                const int32_t key = t.avgZ - static_cast<int32_t>(t.zBias) * zBiasScale;
-                int b = static_cast<int>((static_cast<int64_t>(key - nearZ) * K) / zRange);
-                if (b < 0) b = 0; else if (b >= K) b = K - 1;
-                renderOrder[pos[b]++] = i;
-            }
+            int counts[SortBucketCount] = {};
+            // Keys were captured while emitting triangles, when their
+            // depth and flags were already live. Both passes now stream
+            // bytes instead of revisiting strided, often external-RAM data.
+            for (uint8_t bucket : renderBuckets) ++counts[bucket];
+            int pos[SortBucketCount];
+            pos[0] = 0;
+            for (int i = 1; i < SortBucketCount; ++i)
+                pos[i] = pos[i - 1] + counts[i - 1];
+            for (int32_t i = 0; i < N; ++i)
+                renderOrder[pos[renderBuckets[i]]++] = i;
         } else if (N == 1) {
             renderOrder[0] = 0;
         }
@@ -773,7 +805,14 @@ void Scene::rasterizeBand(int yMin, int yMax) {
         // t.avgZ rides along as the FAST_Z depth hint: emitTri computed the
         // same three-vertex average and already culled it against near/far,
         // so drawTriangle skips both the recompute and the redundant test.
-        if (bandRast.drawTriangle(t.v1, t.v2, t.v3, t.material,
+        RenderVertex a = t.v1.expand(), b = t.v2.expand(), c = t.v3.expand();
+#if TEXTURE_MAPPING
+        if (t.uvIndex != UINT32_MAX) {
+            const TriangleUV& uv = textureQueue[t.uvIndex];
+            a.uv = uv.a; b.uv = uv.b; c.uv = uv.c;
+        }
+#endif
+        if (bandRast.drawTriangle(a, b, c, t.material,
                                    directionalLight, ambientLight,
                                    renderEvenLines,
                                    t.ignoreZBuffer, t.noWriteZBuffer,
@@ -841,9 +880,8 @@ void Scene::addSprite(Sprite2D* sprite) {
 //   textured  — iterate source rows, colour-key skip, optional alpha blend
 //   solid     — span fill with material->color, optional alpha blend
 //
-// Alpha compositing uses a fast 5-bit RGB565 lerp:
-//   out = src + ((dst - src) * inv_alpha >> 5)
-// which is exact at 0 and 255 and has ≤1 LSB error at mid values.
+// Alpha compositing retains exact per-channel /255 rounding. Shared span
+// helpers also implement the byte-swapped full-resolution display pass.
 // ---------------------------------------------------------------------------
 void Scene::drawSprites() {
     // On HALF_WIDTH_BUFFERS builds, sprites are composited at full output
@@ -868,7 +906,6 @@ void Scene::drawSprites() {
         if (combined == 0) continue;
 
         const Texture* tex = sp->material->diffuseMap;
-        const bool opaque  = (combined == 255);
 
         // Clip dest rect to framebuffer bounds.
         const int srcW = tex ? tex->width  : sp->width;
@@ -904,143 +941,32 @@ void Scene::drawSprites() {
                 uint16_t* dstRow = framebuffer + dy * screenWidth + dx0;
                 int sf_x = (dx0 - x0) * xStep;
                 const int w = dx1 - dx0;
-                for (int i = 0; i < w; ++i, sf_x += xStep) {
-                    const int sx  = sf_x >> 8;
-                    const uint16_t s = src[sy * srcW + sx];
-                    if (colorKey && s == keyColor) continue;
-                    const int sr = (s >> 11) & 0x1F;
-                    const int sg = (s >>  5) & 0x3F;
-                    const int sb =  s        & 0x1F;
-                    if (sp->blendMode == BlendMode::BLEND_ADD) {
-                        const uint16_t d = dstRow[i];
-                        int ar=((d>>11)&0x1F)+sr; if(ar>0x1F)ar=0x1F;
-                        int ag=((d>>5) &0x3F)+sg; if(ag>0x3F)ag=0x3F;
-                        int ab=(d      &0x1F)+sb; if(ab>0x1F)ab=0x1F;
-                        dstRow[i]=(uint16_t)((ar<<11)|(ag<<5)|ab);
-                    } else if (combined == 255) {
-                        dstRow[i]=(uint16_t)((sr<<11)|(sg<<5)|sb);
-                    } else {
-                        const uint16_t d = dstRow[i];
-                        const int inv=255-combined;
-                        const int dr=(d>>11)&0x1F,dg=(d>>5)&0x3F,db=d&0x1F;
-                        dstRow[i]=(uint16_t)(
-                            (((sr*combined+dr*inv)/255)<<11)|
-                            (((sg*combined+dg*inv)/255)<<5)|
-                             ((sb*combined+db*inv)/255));
-                    }
-                }
+                blendRGB565ScaledSpan(dstRow, src + sy * srcW, w, sf_x, xStep,
+                    (uint8_t)combined,
+                    sp->blendMode == BlendMode::BLEND_ADD ? RGB565BlendMode::Add : RGB565BlendMode::Alpha255,
+                    colorKey ? BlendColorKey : 0, keyColor);
             }
         } else if (tex) {
             // ---- Textured sprite blit ----------------------------------------
             const bool colorKey = tex->hasAlpha;
             const uint16_t keyColor = tex->alphaColor;
             const uint16_t* src = tex->data;
-
-            if (sp->blendMode == BlendMode::BLEND_ADD) {
-                // Saturating additive: dst = clamp(dst + src). No alpha scaling.
-                for (int dy = dy0; dy < dy1; ++dy) {
-                    const int sy = sy0 + (dy - dy0);
-                    const uint16_t* srcRow = src + sy * tex->width + sx0;
-                    uint16_t*       dstRow = framebuffer + dy * screenWidth + dx0;
-                    const int w = dx1 - dx0;
-                    for (int i = 0; i < w; ++i) {
-                        const uint16_t s = srcRow[i];
-                        if (colorKey && s == keyColor) continue;
-                        const uint16_t d = dstRow[i];
-                        const int sr = (s >> 11) & 0x1F;
-                        const int sg = (s >>  5) & 0x3F;
-                        const int sb =  s        & 0x1F;
-                        int ar = ((d >> 11) & 0x1F) + sr; if (ar > 0x1F) ar = 0x1F;
-                        int ag = ((d >>  5) & 0x3F) + sg; if (ag > 0x3F) ag = 0x3F;
-                        int ab = ( d        & 0x1F) + sb; if (ab > 0x1F) ab = 0x1F;
-                        dstRow[i] = (uint16_t)((ar << 11) | (ag << 5) | ab);
-                    }
-                }
-            } else {
-                for (int dy = dy0; dy < dy1; ++dy) {
-                    const int sy = sy0 + (dy - dy0);
-                    const uint16_t* srcRow = src + sy * tex->width + sx0;
-                    uint16_t*       dstRow = framebuffer + dy * screenWidth + dx0;
-                    const int w = dx1 - dx0;
-
-                    if (opaque) {
-                        if (colorKey) {
-                            for (int i = 0; i < w; ++i) {
-                                if (srcRow[i] != keyColor) dstRow[i] = srcRow[i];
-                            }
-                        } else {
-                            for (int i = 0; i < w; ++i) dstRow[i] = srcRow[i];
-                        }
-                    } else {
-                        // 5-bit lerp: decompose RGB565 into R5/G6/B5 channels,
-                        // lerp each independently, repack.
-                        const int inv = 255 - combined;
-                        for (int i = 0; i < w; ++i) {
-                            const uint16_t s = srcRow[i];
-                            if (colorKey && s == keyColor) continue;
-                            const uint16_t d = dstRow[i];
-                            const int sr = (s >> 11) & 0x1F;
-                            const int sg = (s >>  5) & 0x3F;
-                            const int sb =  s        & 0x1F;
-                            const int dr = (d >> 11) & 0x1F;
-                            const int dg = (d >>  5) & 0x3F;
-                            const int db =  d        & 0x1F;
-                            const int or_ = (sr * combined + dr * inv) / 255;
-                            const int og  = (sg * combined + dg * inv) / 255;
-                            const int ob  = (sb * combined + db * inv) / 255;
-                            dstRow[i] = (uint16_t)((or_ << 11) | (og << 5) | ob);
-                        }
-                    }
-                }
+            for (int dy = dy0; dy < dy1; ++dy) {
+                const int sy = sy0 + (dy - dy0);
+                blendRGB565Span(framebuffer + dy * screenWidth + dx0,
+                    src + sy * tex->width + sx0, dx1 - dx0, 0, (uint8_t)combined,
+                    sp->blendMode == BlendMode::BLEND_ADD ? RGB565BlendMode::Add : RGB565BlendMode::Alpha255,
+                    colorKey ? BlendColorKey : 0, keyColor);
             }
+            continue;
         } else {
             // ---- Solid rectangle fill ----------------------------------------
             const uint16_t col = sp->material->color;
-
-            if (sp->blendMode == BlendMode::BLEND_ADD) {
-                // Additive: add colour directly, no alpha scaling.
-                const int acr = (col >> 11) & 0x1F;
-                const int acg = (col >>  5) & 0x3F;
-                const int acb =  col        & 0x1F;
-                for (int dy = dy0; dy < dy1; ++dy) {
-                    uint16_t* row = framebuffer + dy * screenWidth + dx0;
-                    const int w = dx1 - dx0;
-                    for (int i = 0; i < w; ++i) {
-                        const uint16_t d = row[i];
-                        int ar = ((d >> 11) & 0x1F) + acr; if (ar > 0x1F) ar = 0x1F;
-                        int ag = ((d >>  5) & 0x3F) + acg; if (ag > 0x3F) ag = 0x3F;
-                        int ab = ( d        & 0x1F) + acb; if (ab > 0x1F) ab = 0x1F;
-                        row[i] = (uint16_t)((ar << 11) | (ag << 5) | ab);
-                    }
-                }
-            } else {
-                if (opaque) {
-                    for (int dy = dy0; dy < dy1; ++dy) {
-                        uint16_t* row = framebuffer + dy * screenWidth + dx0;
-                        const int w = dx1 - dx0;
-                        for (int i = 0; i < w; ++i) row[i] = col;
-                    }
-                } else {
-                    const int inv = 255 - combined;
-                    const int cr = (col >> 11) & 0x1F;
-                    const int cg = (col >>  5) & 0x3F;
-                    const int cb =  col        & 0x1F;
-                    for (int dy = dy0; dy < dy1; ++dy) {
-                        uint16_t* row = framebuffer + dy * screenWidth + dx0;
-                        const int w = dx1 - dx0;
-                        for (int i = 0; i < w; ++i) {
-                            const uint16_t d = row[i];
-                            const int dr = (d >> 11) & 0x1F;
-                            const int dg = (d >>  5) & 0x3F;
-                            const int db =  d        & 0x1F;
-                            const int or_ = (cr * combined + dr * inv) / 255;
-                            const int og  = (cg * combined + dg * inv) / 255;
-                            const int ob  = (cb * combined + db * inv) / 255;
-                            row[i] = (uint16_t)((or_ << 11) | (og << 5) | ob);
-                        }
-                    }
-                }
-            }
+            for (int dy = dy0; dy < dy1; ++dy)
+                blendRGB565Span(framebuffer + dy * screenWidth + dx0, nullptr,
+                    dx1 - dx0, col, (uint8_t)combined,
+                    sp->blendMode == BlendMode::BLEND_ADD ? RGB565BlendMode::Add : RGB565BlendMode::Alpha255);
+            continue;
         }
     }
 #endif // !HALF_WIDTH_BUFFERS
@@ -1073,20 +999,12 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
 
     // Reusable scratch buffers — kept across calls so we don't pay for a
     // heap alloc per object per frame. Renderer is single-threaded
-    // (one render task), so plain static is fine here. RenderVertex (not
-    // Object::Vertex): only the fields the configured pipeline consumes
-    // are carried, and the transform loop below writes every live field,
-    // so no upfront copy of the source vertex array is needed at all.
-    static std::vector<RenderVertex> transformedVertices;
-    static std::vector<Vector3> camSpacePos;
+    // (one render task), so plain static is fine here. PipelineVertex keeps
+    // only transformed attributes; mesh UVs are fetched for visible textured
+    // faces below. The loop writes every live field, with no upfront copy.
+    static std::vector<PipelineVertex> transformedVertices;
     const size_t vertCount = meshSource->vertices.size();
     transformedVertices.resize(vertCount);
-    // Parallel array of camera-space positions (pre-projection). Needed so
-    // triangles straddling the near plane can be clipped geometrically —
-    // otherwise a single vertex slipping behind the near plane would force
-    // the whole triangle to be discarded, leaving a visible hole in the
-    // world right under the camera.
-    camSpacePos.resize(vertCount);
 
     Vector3 camPos(camera->position);
     #if FLOAT_CAMERA_ANGLES
@@ -1157,44 +1075,10 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
         fObjM20=(float)objM20/FIXED_POINT_SCALE; fObjM21=(float)objM21/FIXED_POINT_SCALE; fObjM22=(float)objM22/FIXED_POINT_SCALE;
     }
 
-    // Composed camera rotation matrix (Rz * Rx * Ry, since the previous
-    // per-vertex code applied Y→X→Z). Same scheme as the object matrix.
-    // Computed per object render rather than once per scene because the
-    // call cost is negligible (~9 muls / 9 divs) compared to the per-
-    // vertex savings; hoisting to renderScene would shave nine muls per
-    // *object*, not per vertex.
-    int32_t camM00, camM01, camM02;
-    int32_t camM10, camM11, camM12;
-    int32_t camM20, camM21, camM22;
-    {
-        const int32_t cx = camCosX, sx = camSinX;
-        const int32_t cy = camCosY, sy = camSinY;
-        const int32_t cz = camCosZ, sz = camSinZ;
-        // K = Rx * Ry
-        const int32_t k00 = cy;
-        const int32_t k01 = 0;
-        const int32_t k02 = sy;
-        const int32_t k10 = (int32_t)((int64_t)sx * sy / FIXED_POINT_SCALE);
-        const int32_t k11 = cx;
-        const int32_t k12 = (int32_t)(-(int64_t)sx * cy / FIXED_POINT_SCALE);
-        const int32_t k20 = (int32_t)(-(int64_t)cx * sy / FIXED_POINT_SCALE);
-        const int32_t k21 = sx;
-        const int32_t k22 = (int32_t)((int64_t)cx * cy / FIXED_POINT_SCALE);
-        // M = Rz * K
-        camM00 = (int32_t)(((int64_t)cz * k00 - (int64_t)sz * k10) / FIXED_POINT_SCALE);
-        camM01 = (int32_t)(((int64_t)cz * k01 - (int64_t)sz * k11) / FIXED_POINT_SCALE);
-        camM02 = (int32_t)(((int64_t)cz * k02 - (int64_t)sz * k12) / FIXED_POINT_SCALE);
-        camM10 = (int32_t)(((int64_t)sz * k00 + (int64_t)cz * k10) / FIXED_POINT_SCALE);
-        camM11 = (int32_t)(((int64_t)sz * k01 + (int64_t)cz * k11) / FIXED_POINT_SCALE);
-        camM12 = (int32_t)(((int64_t)sz * k02 + (int64_t)cz * k12) / FIXED_POINT_SCALE);
-        camM20 = k20;
-        camM21 = k21;
-        camM22 = k22;
-    }
-    // Float camera matrix: pre-divided by FIXED_POINT_SCALE once per object.
-    const float fCamM00=(float)camM00/FIXED_POINT_SCALE, fCamM01=(float)camM01/FIXED_POINT_SCALE, fCamM02=(float)camM02/FIXED_POINT_SCALE;
-    const float fCamM10=(float)camM10/FIXED_POINT_SCALE, fCamM11=(float)camM11/FIXED_POINT_SCALE, fCamM12=(float)camM12/FIXED_POINT_SCALE;
-    const float fCamM20=(float)camM20/FIXED_POINT_SCALE, fCamM21=(float)camM21/FIXED_POINT_SCALE, fCamM22=(float)camM22/FIXED_POINT_SCALE;
+    // Composed camera matrix is shared by every object in this frame.
+    const float fCamM00=cameraMatrix[0], fCamM01=cameraMatrix[1], fCamM02=cameraMatrix[2];
+    const float fCamM10=cameraMatrix[3], fCamM11=cameraMatrix[4], fCamM12=cameraMatrix[5];
+    const float fCamM20=cameraMatrix[6], fCamM21=cameraMatrix[7], fCamM22=cameraMatrix[8];
 
     // Combined object→camera transform, composed ONCE per object:
     //   p_cam = Cam · (Obj·p + objPos − camPos) = (Cam·Obj)·p + Cam·(objPos − camPos)
@@ -1303,16 +1187,11 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
     }
 #endif
 
-    // Transform vertices and normals. Reads from the authoring vertices
-    // (meshSource->vertices), writes only the configured pipeline's live
-    // fields into the slim RenderVertex scratch array.
-    for (size_t vi = 0; vi < vertCount; ++vi) {
-        const Object::Vertex& srcVert = meshSource->vertices[vi];
-        RenderVertex& dst = transformedVertices[vi];
+    // Share exactly the same transform/rounding with the clipping slow path.
+    // Camera Z already lives in PipelineVertex. Recompute camera X/Y only
+    // for straddling faces instead of writing a second array for every vertex.
+    auto cameraPosition = [&](const Object::Vertex& srcVert) -> Vector3 {
         Vector3 pos(srcVert.position);
-#if LIGHTING
-        Vector3 normal(srcVert.normal);
-#endif
 
         // Y-axis (cylindrical) billboard: pre-rotate the vertex offset
         // by +camRotY around Y so the camera's Y rotation below cancels
@@ -1343,7 +1222,17 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
                 (int32_t)(fpx * fM10 + fpy * fM11 + fpz * fM12 + fTy),
                 (int32_t)(fpx * fM20 + fpy * fM21 + fpz * fM22 + fTz));
         }
+        if (pos.z == 0) pos.z = 1;
+        return pos;
+    };
+
+    // Transform vertices and normals, writing only live projected attributes.
+    for (size_t vi = 0; vi < vertCount; ++vi) {
+        const Object::Vertex& srcVert = meshSource->vertices[vi];
+        PipelineVertex& dst = transformedVertices[vi];
+        const Vector3 pos = cameraPosition(srcVert);
 #if LIGHTING
+        Vector3 normal(srcVert.normal);
         // Normals use the combined ROTATION only — no translation. The
         // object-local-light path skips the transform entirely and shades
         // from the untransformed mesh-local normal below.
@@ -1359,17 +1248,11 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
         // Perspective projection — float fovFactor lets us use a reciprocal
         // multiply instead of 64-bit integer divide, leveraging the hardware
         // FPU on ESP32-S3/P4 (64-bit div is software-emulated on those cores).
-        if (pos.z == 0) pos.z = 1; // avoid divide-by-zero
-        // Record camera-space position (pre-projection) for near-plane clipping.
-        camSpacePos[vi] = pos;
         const float invZ = fovFactor / (float)pos.z;
         dst.position.x = (int32_t)(pos.x * invZ) + screenWidth / 2;
         dst.position.y = screenHeight / 2 - (int32_t)(pos.y * invZ);
         dst.position.z = pos.z;
 
-#if TEXTURE_MAPPING
-        dst.uv = srcVert.uv;
-#endif
 #if LIGHTING
         // Store transformed normal (only consumed by the lit shading paths).
         dst.normal = normal;
@@ -1480,10 +1363,13 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
 
     // Emit a projected triangle into renderQueue (does screen-bounds + backface
     // cull). Reused by both the fast path and the clipped path.
-    auto emitTri = [&](const RenderVertex& a,
-                       const RenderVertex& b,
-                       const RenderVertex& c,
+    auto emitTri = [&](const auto& a,
+                       const auto& b,
+                       const auto& c,
                        Material* mat
+#if TEXTURE_MAPPING
+                       , const Vector2* uvA, const Vector2* uvB, const Vector2* uvC
+#endif
 #if MAX_PICK_QUERIES > 0
                        , int32_t srcTriIdx
 #endif
@@ -1524,17 +1410,28 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
         if (shouldCull) return;
 
         RenderTri rt;
-        if (cullingMode == CullingMode::NO_CULLING && shoelaceArea < 0) {
-            rt.v1 = c; rt.v2 = b; rt.v3 = a;
+        const bool reverse = cullingMode == CullingMode::NO_CULLING && shoelaceArea < 0;
+        if (reverse) {
+            rt.v1.assign(c); rt.v2.assign(b); rt.v3.assign(a);
         } else {
-            rt.v1 = a; rt.v2 = b; rt.v3 = c;
+            rt.v1.assign(a); rt.v2.assign(b); rt.v3.assign(c);
         }
+#if TEXTURE_MAPPING
+        rt.uvIndex = UINT32_MAX;
+        // Fetch mesh UVs only after culling, and only for textured faces.
+        if (mat && mat->diffuseMap) {
+            rt.uvIndex = (uint32_t)textureQueue.size();
+            textureQueue.push_back(reverse ? TriangleUV{*uvC, *uvB, *uvA}
+                                           : TriangleUV{*uvA, *uvB, *uvC});
+        }
+#endif
         rt.material       = mat;
         rt.ignoreZBuffer  = ignoreZBuffer;
         rt.noWriteZBuffer = noWriteZBuffer;
         rt.zBias          = obj->zBias;
         rt.objAlpha       = objAlpha;
         rt.avgZ           = avgZ;
+        rt.brightnessPrecomputed = false;
 #if LIGHTING
         rt.brightnessPrecomputed = objectLocalLight;
 #endif
@@ -1543,6 +1440,22 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
         rt.sourceTriangleIndex = srcTriIdx;
 #endif
         renderQueue.push_back(rt);
+        // Preserve the old stable 64-bucket ordering exactly, including
+        // noWriteZBuffer taking precedence when both special flags are set.
+        uint8_t bucket = 0;
+        if (!noWriteZBuffer) {
+            bucket = SortBucketCount - 1;
+            if (!ignoreZBuffer) {
+                constexpr int32_t zBiasScale = 256;
+                constexpr int K = SortBucketCount - 2;
+                const int32_t key = avgZ - static_cast<int32_t>(obj->zBias) * zBiasScale;
+                const int32_t range = std::max<int32_t>(camera->farPlane - camera->nearPlane, 1);
+                int b = static_cast<int>((static_cast<int64_t>(key - camera->nearPlane) * K) / range);
+                b = std::max(0, std::min(b, K - 1));
+                bucket = static_cast<uint8_t>(K - b);
+            }
+        }
+        renderBuckets.push_back(bucket);
     };
 
     // Render triangles with backface culling and shading
@@ -1551,22 +1464,24 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
         const auto& vA = transformedVertices[triangle.v1];
         const auto& vB = transformedVertices[triangle.v2];
         const auto& vC = transformedVertices[triangle.v3];
-        const Vector3& cA = camSpacePos[triangle.v1];
-        const Vector3& cB = camSpacePos[triangle.v2];
-        const Vector3& cC = camSpacePos[triangle.v3];
 
         // Classify each vertex against the near plane.
-        const int outMask = (cA.z < nz ? 1 : 0)
-                          | (cB.z < nz ? 2 : 0)
-                          | (cC.z < nz ? 4 : 0);
+        const int outMask = (vA.position.z < nz ? 1 : 0)
+                          | (vB.position.z < nz ? 2 : 0)
+                          | (vC.position.z < nz ? 4 : 0);
 
         if (outMask == 7) continue;               // fully behind near plane
 
+#if TEXTURE_MAPPING
+        #define JET_UV_ARGS(A, B, C) , (A), (B), (C)
+#else
+        #define JET_UV_ARGS(A, B, C)
+#endif
 #if MAX_PICK_QUERIES > 0
         const int32_t srcTriIdx = (int32_t)triIdx;
-        #define JET_EMIT_TRI(A, B, C, M)  emitTri((A), (B), (C), (M), srcTriIdx)
+        #define JET_EMIT_TRI(A, B, C, M, U, V, W)  emitTri((A), (B), (C), (M) JET_UV_ARGS(U, V, W), srcTriIdx)
 #else
-        #define JET_EMIT_TRI(A, B, C, M)  emitTri((A), (B), (C), (M))
+        #define JET_EMIT_TRI(A, B, C, M, U, V, W)  emitTri((A), (B), (C), (M) JET_UV_ARGS(U, V, W))
 #endif
 
         if (outMask == 0) {                       // fast path: fully in front
@@ -1575,13 +1490,27 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
                 s_bakedMat.color = triangle.bakedColor;
                 effectiveMat = &s_bakedMat;
             }
-            JET_EMIT_TRI(vA, vB, vC, effectiveMat);
+            JET_EMIT_TRI(vA, vB, vC, effectiveMat,
+                         &meshSource->vertices[triangle.v1].uv,
+                         &meshSource->vertices[triangle.v2].uv,
+                         &meshSource->vertices[triangle.v3].uv);
             continue;
         }
 
         // Straddling near plane — produce a clipped polygon (3 or 4 verts)
         // while preserving winding order of the original triangle.
-        const RenderVertex* vs[3]  = { &vA, &vB, &vC };
+        const Vector3 cA = cameraPosition(meshSource->vertices[triangle.v1]);
+        const Vector3 cB = cameraPosition(meshSource->vertices[triangle.v2]);
+        const Vector3 cC = cameraPosition(meshSource->vertices[triangle.v3]);
+        RenderVertex clippedInput[3] = { vA.expand(), vB.expand(), vC.expand() };
+#if TEXTURE_MAPPING
+        if (!triangle.colorBaked && triangle.material && triangle.material->diffuseMap) {
+            clippedInput[0].uv = meshSource->vertices[triangle.v1].uv;
+            clippedInput[1].uv = meshSource->vertices[triangle.v2].uv;
+            clippedInput[2].uv = meshSource->vertices[triangle.v3].uv;
+        }
+#endif
+        const RenderVertex* vs[3]  = { &clippedInput[0], &clippedInput[1], &clippedInput[2] };
         const Vector3*        cvs[3] = { &cA, &cB, &cC };
         const bool in[3] = { (outMask & 1) == 0,
                              (outMask & 2) == 0,
@@ -1604,10 +1533,11 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
         if (polyN >= 3) {
             Material* effectiveMat = triangle.material;
             if (triangle.colorBaked) { s_bakedMat.color = triangle.bakedColor; effectiveMat = &s_bakedMat; }
-            JET_EMIT_TRI(poly[0], poly[1], poly[2], effectiveMat);
+            JET_EMIT_TRI(poly[0], poly[1], poly[2], effectiveMat, &poly[0].uv, &poly[1].uv, &poly[2].uv);
         }
-        if (polyN == 4) JET_EMIT_TRI(poly[0], poly[2], poly[3], triangle.colorBaked ? &s_bakedMat : triangle.material);
+        if (polyN == 4) JET_EMIT_TRI(poly[0], poly[2], poly[3], triangle.colorBaked ? &s_bakedMat : triangle.material, &poly[0].uv, &poly[2].uv, &poly[3].uv);
         #undef JET_EMIT_TRI
+        #undef JET_UV_ARGS
     }
 }
 

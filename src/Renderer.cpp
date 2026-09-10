@@ -4,6 +4,7 @@
 #include "TrigLUT.hpp"
 #include "FastMath.hpp"
 #include "TriangleSpans.hpp"
+#include "BlendSpans.hpp"
 #include <type_traits>
 
 #if defined(CHECKERBOARD_MODE) && CHECKERBOARD_MODE && defined(FIELD_BUFFERS) && FIELD_BUFFERS
@@ -347,6 +348,38 @@ namespace Renderer
     }
 
     bool PERF_CRITICAL Rasterizer::drawTriangle(
+        const RenderVertex& v1,const RenderVertex& v2,const RenderVertex& v3,
+        Material* material,DirectionalLight* directionalLight,AmbientLight* ambientLight,
+        bool renderEvenLines,bool ignoreZBuffer,bool noWriteZBuffer,int zBias,
+        uint8_t objAlpha,bool brightnessPrecomputed,int32_t avgZHint)
+    {
+#if JET_FAST_SIMPLE_SPANS && TEXTURE_MAPPING
+        bool textured=material->diffuseMap!=nullptr;
+        if(textured && textureLodEnabled && textureLodFar>textureLodNear) {
+    #if LAZY_Z
+            const int32_t lodZ=std::max({v1.position.z,v2.position.z,v3.position.z});
+    #else
+            const int32_t lodZ=avgZHint!=INT32_MIN?avgZHint:
+                (int32_t)(((int64_t)v1.position.z+v2.position.z+v3.position.z)/3);
+    #endif
+            textured=lodZ<textureLodFar;
+        }
+        if(!textured)
+            return drawFlatTriangle(v1,v2,v3,material,directionalLight,ambientLight,
+                renderEvenLines,ignoreZBuffer,noWriteZBuffer,zBias,objAlpha,brightnessPrecomputed,avgZHint);
+#endif
+        return drawTexturedTriangle(v1,v2,v3,material,directionalLight,ambientLight,
+            renderEvenLines,ignoreZBuffer,noWriteZBuffer,zBias,objAlpha,brightnessPrecomputed,avgZHint);
+    }
+
+    // Separate instantiations let the compiler retain the compact flat-fill
+    // kernel in a texture-enabled build, without UV/general-loop register
+    // pressure spilling into the overwhelmingly common untextured path.
+    template<bool SampleTextures>
+#if defined(ESP_PLATFORM)
+    __attribute__((always_inline))
+#endif
+    inline bool Rasterizer::drawTriangleImpl(
         const RenderVertex &v1,
         const RenderVertex &v2,
         const RenderVertex &v3,
@@ -378,7 +411,7 @@ namespace Renderer
         (void)avgZHint; // Only consumed on the FAST_Z && !LAZY_Z path.
 
 #if TEXTURE_MAPPING
-        Texture *diffuseMap = material->diffuseMap;
+        Texture *diffuseMap = SampleTextures ? material->diffuseMap : nullptr;
 #endif
         const bool isWaterReflect = (material->shadingMode == ShadingMode::WATER_REFLECT);
         const bool isAdditive     = (material->shadingMode == ShadingMode::ADDITIVE);
@@ -543,7 +576,7 @@ namespace Renderer
 #endif
 
     #if TEXTURE_MAPPING
-        uint16_t color = material->getColor({0, 0});
+        uint16_t color = SampleTextures ? material->getColor({0, 0}) : material->color;
     #else
         uint16_t color = material->color;
     #endif
@@ -622,6 +655,31 @@ namespace Renderer
         // __divdi3 calls (per-triangle Gouraud step + per-row brightness
         // init) with float multiplies — ~70 cy → ~5 cy each on Xtensa LX7.
         const float invDenom64f = 1.0f / (float)denom64;
+#endif
+
+#if TEXTURE_MAPPING && !PERSPECTIVE_CORRECT_TEXTURES
+        // Affine UVs are planes. One reciprocal per triangle and one anchor
+        // per scanline replace two barycentric divides at every pixel.
+        // Q16 retains sub-texel precision even on wide desktop spans. Bound
+        // UVs and steps so signed accumulators (including the final unused
+        // increment) cannot overflow; unusual assets retain the general path.
+        const float uvInvArea = 1.0f / (float)denom64;
+        constexpr int uvLimit = 8192;
+        const auto boundedUV = [=](const RenderVertex& v) {
+            return v.uv.x >= -uvLimit && v.uv.x <= uvLimit
+                && v.uv.y >= -uvLimit && v.uv.y <= uvLimit;
+        };
+        bool incrementalUV = diffuseMap && !diffuseMap->screenSpace && !diffuseMap->reflectionMap
+            && boundedUV(v1) && boundedUV(v2) && boundedUV(v3);
+        int32_t uStepQ16=0, vStepQ16=0;
+    #if !BILINEAR_FILTER
+        const bool directRGB565 = diffuseMap && diffuseMap->data && !diffuseMap->palette
+            && diffuseMap->addressMode == WRAP
+            && diffuseMap->width > 0 && diffuseMap->width <= 1024
+            && diffuseMap->height > 0 && diffuseMap->height <= 1024
+            && (diffuseMap->width & (diffuseMap->width-1)) == 0
+            && (diffuseMap->height & (diffuseMap->height-1)) == 0;
+    #endif
 #endif
 
         Vector2 uv = {0, 0};
@@ -823,6 +881,20 @@ namespace Renderer
         const int32_t dw0_dy_step = dw0_dy * inc;
         const int32_t dw1_dy_step = dw1_dy * inc;
         const int32_t dw2_dy_step = dw2_dy * inc;
+
+#if TEXTURE_MAPPING && !PERSPECTIVE_CORRECT_TEXTURES
+        if (incrementalUV) {
+            const float du = (float)((int64_t)v1.uv.x*dw0_dx_step + (int64_t)v2.uv.x*dw1_dx_step
+                                  + (int64_t)v3.uv.x*dw2_dx_step) * uvInvArea;
+            const float dv = (float)((int64_t)v1.uv.y*dw0_dx_step + (int64_t)v2.uv.y*dw1_dx_step
+                                  + (int64_t)v3.uv.y*dw2_dx_step) * uvInvArea;
+            incrementalUV = std::abs(du) <= uvLimit && std::abs(dv) <= uvLimit;
+            if (incrementalUV) {
+                uStepQ16=(int32_t)std::lround(du*65536.0f);
+                vStepQ16=(int32_t)std::lround(dv*65536.0f);
+            }
+        }
+#endif
 
 #if LIGHTING
         // Plane-equation incremental Gouraud brightness. Brightness is
@@ -1222,16 +1294,27 @@ namespace Renderer
                     const uint16_t* srcBuf = reflectBuffer ? reflectBuffer : framebuffer;
                     int32_t mirrorIdx = waterMirrorBufBase + xStart / 2;
                     const uint16_t skyCol = waterSkyFallback ? gradientColors[0] : 0;
-                    for (int x = xStart; x <= xEnd; x += 2, bufferIndex++, mirrorIdx++) {
-                        const uint16_t reflPx = waterSkyFallback ? skyCol : srcBuf[mirrorIdx];
-                        framebuffer[bufferIndex] = blendRGB565(material->color,
-                                                               reflPx,
-                                                               waterReflectAlpha);
+                    const int spanCount = ((xEnd - xStart) >> 1) + 1;
+                    if (waterSkyFallback) {
+                        fillRGB565Span(framebuffer, bufferIndex, spanCount,
+                            blendRGB565(material->color, skyCol, waterReflectAlpha));
+                    } else if (spanCount < 32) {
+                        for (int i = 0; i < spanCount; ++i)
+                            framebuffer[bufferIndex + i] = blendRGB565(material->color,
+                                srcBuf[mirrorIdx + i], waterReflectAlpha);
+                    } else {
+                        blendRGB565Span(framebuffer + bufferIndex, srcBuf + mirrorIdx,
+                            spanCount, material->color, waterReflectAlpha,
+                            RGB565BlendMode::Alpha256, BlendConstantBackground);
                     }
                 } else if (isAdditive) {
                     // Saturating-add: source scaled by alpha then added to destination.
                     // alpha==255 fast path skips the per-channel multiply.
-                    if (alpha == 255) {
+                    if (((xEnd - xStart) >> 1) + 1 >= 32) {
+                        blendRGB565Span(framebuffer + bufferIndex, nullptr,
+                            ((xEnd - xStart) >> 1) + 1, color, alpha,
+                            alpha == 255 ? RGB565BlendMode::Add : RGB565BlendMode::AddAlpha256);
+                    } else if (alpha == 255) {
                         for (int x = xStart; x <= xEnd; x += 2, bufferIndex++) {
                             const uint16_t d = framebuffer[bufferIndex];
                             uint32_t r = ((d >> 11) & 0x1Fu) + ((color >> 11) & 0x1Fu); if (r > 0x1Fu) r = 0x1Fu;
@@ -1245,8 +1328,13 @@ namespace Renderer
                         }
                     }
                 } else {
-                    for (int x = xStart; x <= xEnd; x += 2, bufferIndex++) {
-                        framebuffer[bufferIndex] = blendRGB565(framebuffer[bufferIndex], color, alpha);
+                    const int count = ((xEnd - xStart) >> 1) + 1;
+                    if (count >= 32) {
+                        blendRGB565Span(framebuffer + bufferIndex, nullptr,
+                            count, color, alpha, RGB565BlendMode::Alpha256);
+                    } else {
+                        for (int i = 0; i < count; ++i)
+                            framebuffer[bufferIndex + i] = blendRGB565(framebuffer[bufferIndex + i], color, alpha);
                     }
                 }
     #endif // SCREEN_DOOR_ALPHA
@@ -1261,6 +1349,70 @@ namespace Renderer
                    // the fast path is also compiled (TEXTURE_MAPPING build),
                    // or unconditionally when JET_FAST_SIMPLE_SPANS is
                    // false (any of the heavy features enabled).
+#if TEXTURE_MAPPING && !PERSPECTIVE_CORRECT_TEXTURES
+                int32_t uQ16=0,vQ16=0;
+                bool rowIncrementalUV=incrementalUV;
+                if (rowIncrementalUV) {
+                    // Full-width edge values avoid the old int32 UV*weight
+                    // overflow on large projected triangles near the camera.
+                    const float uRow=((float)v1.uv.x*(float)ew0 + (float)v2.uv.x*(float)ew1
+                                    + (float)v3.uv.x*(float)ew2)*uvInvArea;
+                    const float vRow=((float)v1.uv.y*(float)ew0 + (float)v2.uv.y*(float)ew1
+                                    + (float)v3.uv.y*(float)ew2)*uvInvArea;
+                    rowIncrementalUV=std::abs(uRow)<=uvLimit+1 && std::abs(vRow)<=uvLimit+1;
+                    if (rowIncrementalUV) {
+                        uQ16=(int32_t)std::lround(uRow*65536.0f);
+                        vQ16=(int32_t)std::lround(vRow*65536.0f);
+                    }
+                }
+                const int32_t rowUStep=rowIncrementalUV?uStepQ16:0;
+                const int32_t rowVStep=rowIncrementalUV?vStepQ16:0;
+    #define JET_UV_STEP , uQ16 += rowUStep, vQ16 += rowVStep
+#else
+    #define JET_UV_STEP
+#endif
+#if JET_FAST_SIMPLE_SPANS && TEXTURE_MAPPING && !PERSPECTIVE_CORRECT_TEXTURES && !BILINEAR_FILTER
+                if (decltype(useSpans)::value && rowIncrementalUV && directRGB565
+                    && plainOpaqueReplace && !diffuseMap->hasAlpha) {
+                    // Opaque affine tiles need neither per-pixel edge tests
+                    // nor the lighting/alpha/depth machinery of the general
+                    // loop. Coverage comes from the exact scanline walker.
+                    const uint16_t* texels=diffuseMap->data;
+                    const unsigned tw=diffuseMap->width, th=diffuseMap->height;
+    #if HALF_WIDTH_BUFFERS
+                    constexpr int strideDiv=2;
+    #else
+                    constexpr int strideDiv=1;
+    #endif
+    #if FIELD_BUFFERS
+                    const int rowBase=(y>>1)*(screenWidth/strideDiv);
+    #else
+                    const int rowBase=y*(screenWidth/strideDiv);
+    #endif
+                    auto textureSpan=[&](auto fading) {
+                        int32_t uq=uQ16,vq=vQ16;
+                        int index=rowBase+xStart/strideDiv;
+                        for(int x=xStart;x<=xEnd;x+=xStep,++index,uq+=rowUStep,vq+=rowVStep) {
+    #if !HALF_WIDTH_BUFFERS
+                            if(checkerboardMode && (((x^y)&1)!=cbFrameParity)) continue;
+    #endif
+                            const unsigned tx=((unsigned)(uq/65536)&(FIXED_POINT_SCALE-1))*tw/FIXED_POINT_SCALE;
+                            const unsigned ty=((unsigned)(vq/65536)&(FIXED_POINT_SCALE-1))*th/FIXED_POINT_SCALE;
+                            uint16_t texel=texels[ty*tw+tx];
+                            if constexpr(decltype(fading)::value) {
+    #if SCREEN_DOOR_ALPHA
+                                if(!shouldDrawPixel(x,y,textureLodFade)) texel=material->color;
+    #else
+                                texel=blendRGB565(material->color,texel,textureLodFade);
+    #endif
+                            }
+                            framebuffer[index]=texel;
+                        }
+                    };
+                    if(textureLodFade==255) textureSpan(std::false_type{});
+                    else textureSpan(std::true_type{});
+                } else {
+#endif
     // Per-pixel brightness step appended to the for-loop header below. The
     // step has to happen unconditionally per pixel (continues elsewhere in
     // the loop body would otherwise desync the running value), so it lives
@@ -1277,7 +1429,7 @@ namespace Renderer
                 int32_t bufferIndex = y * (screenWidth / 2) + (xStart / 2);
     #endif
             for (int x = xStart; x <= xEnd;
-                 x += 2, ew0 += dw0_dx_step, ew1 += dw1_dx_step, ew2 += dw2_dx_step, bufferIndex++ JET_LIT_STEP)
+                 x += 2, ew0 += dw0_dx_step, ew1 += dw1_dx_step, ew2 += dw2_dx_step, bufferIndex++ JET_LIT_STEP JET_UV_STEP)
                 {
     #else
     #if FIELD_BUFFERS
@@ -1286,7 +1438,7 @@ namespace Renderer
                 int32_t bufferIndex = y * screenWidth + xStart;
     #endif
             for (int x = xStart; x <= xEnd;
-                 x++, ew0 += dw0_dx_step, ew1 += dw1_dx_step, ew2 += dw2_dx_step, bufferIndex++ JET_LIT_STEP)
+                 x++, ew0 += dw0_dx_step, ew1 += dw1_dx_step, ew2 += dw2_dx_step, bufferIndex++ JET_LIT_STEP JET_UV_STEP)
                 {
     #endif
                 // Z-buffer index. Stride matches the configured depth-buffer
@@ -1330,9 +1482,9 @@ namespace Renderer
                     // code needs int32 barycentric weights (interpolation paths)
                     // they're safe to narrow here. The compiler DCEs these on
                     // the FAST_Z / no-texture / no-lighting fast path.
-                    int32_t w0 = (int32_t)ew0;
-                    int32_t w1 = (int32_t)ew1;
-                    int32_t w2 = (int32_t)ew2;
+                    [[maybe_unused]] int32_t w0 = (int32_t)ew0;
+                    [[maybe_unused]] int32_t w1 = (int32_t)ew1;
+                    [[maybe_unused]] int32_t w2 = (int32_t)ew2;
 
     // Pixel is inside the triangle - render it
     // Interpolate z, u, v
@@ -1427,12 +1579,24 @@ namespace Renderer
                             uv.x = (interpolatedUOverZ * FIXED_POINT_SCALE) / interpolatedOneOverZ;
                             uv.y = (interpolatedVOverZ * FIXED_POINT_SCALE) / interpolatedOneOverZ;
     #else // Affine texture mapping
-                            uv.x = (v1.uv.x * w0 + v2.uv.x * w1 + v3.uv.x * w2) / denom;
-                            uv.y = (v1.uv.y * w0 + v2.uv.y * w1 + v3.uv.y * w2) / denom;
+                            if (rowIncrementalUV) {
+                                uv.x = uQ16 / 65536;
+                                uv.y = vQ16 / 65536;
+                            } else {
+                                uv.x = (int32_t)(((double)v1.uv.x * ew0 + (double)v2.uv.x * ew1 + (double)v3.uv.x * ew2) / denom64);
+                                uv.y = (int32_t)(((double)v1.uv.y * ew0 + (double)v2.uv.y * ew1 + (double)v3.uv.y * ew2) / denom64);
+                            }
     #endif
                         }
 
                         // Sample color from material
+    #if !PERSPECTIVE_CORRECT_TEXTURES && !BILINEAR_FILTER
+                        if (directRGB565) {
+                            const unsigned tx=((unsigned)uv.x & (FIXED_POINT_SCALE-1))*diffuseMap->width/FIXED_POINT_SCALE;
+                            const unsigned ty=((unsigned)uv.y & (FIXED_POINT_SCALE-1))*diffuseMap->height/FIXED_POINT_SCALE;
+                            color=diffuseMap->data[ty*diffuseMap->width+tx];
+                        } else
+    #endif
                         color = material->getColor(uv);
 
                         // If the material diffuse map has a transparent color and that's what we got, skip drawing this pixel
@@ -1715,15 +1879,38 @@ namespace Renderer
 
     #endif
                 }
+#if JET_FAST_SIMPLE_SPANS && TEXTURE_MAPPING && !PERSPECTIVE_CORRECT_TEXTURES && !BILINEAR_FILTER
+                } // general fallback for textured spans
+#endif
                 }  // close general per-pixel path block
     #endif // !JET_FAST_SIMPLE_SPANS || TEXTURE_MAPPING
     #undef JET_LIT_STEP
+    #undef JET_UV_STEP
             }
         };
         if (spans.valid) rasterRows(std::true_type{});
         else rasterRows(std::false_type{});
 
         return true;
+    }
+
+    // Non-template entry points keep both kernels in IRAM. GCC's template
+    // COMDAT instantiations otherwise land in flash despite IRAM_ATTR.
+    bool PERF_CRITICAL Rasterizer::drawFlatTriangle(
+        const RenderVertex& v1,const RenderVertex& v2,const RenderVertex& v3,
+        Material* material,DirectionalLight* directionalLight,AmbientLight* ambientLight,
+        bool renderEvenLines,bool ignoreZBuffer,bool noWriteZBuffer,int zBias,
+        uint8_t objAlpha,bool brightnessPrecomputed,int32_t avgZHint) {
+        return drawTriangleImpl<false>(v1,v2,v3,material,directionalLight,ambientLight,
+            renderEvenLines,ignoreZBuffer,noWriteZBuffer,zBias,objAlpha,brightnessPrecomputed,avgZHint);
+    }
+    bool PERF_CRITICAL Rasterizer::drawTexturedTriangle(
+        const RenderVertex& v1,const RenderVertex& v2,const RenderVertex& v3,
+        Material* material,DirectionalLight* directionalLight,AmbientLight* ambientLight,
+        bool renderEvenLines,bool ignoreZBuffer,bool noWriteZBuffer,int zBias,
+        uint8_t objAlpha,bool brightnessPrecomputed,int32_t avgZHint) {
+        return drawTriangleImpl<true>(v1,v2,v3,material,directionalLight,ambientLight,
+            renderEvenLines,ignoreZBuffer,noWriteZBuffer,zBias,objAlpha,brightnessPrecomputed,avgZHint);
     }
 } // namespace Renderer
 

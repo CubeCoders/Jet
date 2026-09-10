@@ -2,7 +2,7 @@
 #define JET_SPRITE2D_HPP
 
 /// @file Sprite2D.hpp
-/// @brief Screen-space 2D overlay: solid rectangle or unscaled upright sprite.
+/// @brief Screen-space 2D overlay: solid rectangle or upright scaled sprite.
 ///
 /// A Sprite2D is owned by the caller and registered with Scene::addSprite().
 /// After registration it is drawn automatically at the end of every
@@ -18,7 +18,7 @@
 ///
 /// The effective alpha is `material->alpha * alpha / 255`.  At 255 the blit
 /// is a straight copy (fastest path).  Any other value blends against the
-/// existing framebuffer content with a fast 5-bit lerp.
+/// existing framebuffer content with per-channel RGB565 /255 rounding.
 ///
 /// `zOrder` controls draw order within the sprite pass: lower values are
 /// drawn first (further back).  There is no framebuffer depth test — sprites
@@ -43,7 +43,9 @@ struct Sprite2D {
     /// @brief Blend equation used when writing this sprite onto the framebuffer.
     ///
     /// BLEND_REPLACE — normal alpha-lerp composite (default).
-    /// BLEND_ADD     — saturating additive: dst = clamp(dst + src * alpha).
+    /// BLEND_ADD     — saturating additive: dst = clamp(dst + src).
+    ///                 Combined alpha zero skips the sprite; other alpha values
+    ///                 do not scale the source. Bake falloff into the texture.
     ///                 Ideal for glows, coronas and lens-flare elements drawn as
     ///                 grayscale soft-edged textures; produces bright halos that
     ///                 never over-darken the scene.
@@ -51,7 +53,7 @@ struct Sprite2D {
     /// @brief Integer upscale factor applied at blit time (1 = native size).
     ///
     /// When > 1, the sprite is rendered at texture_size × scale pixels using
-    /// bilinear interpolation. Solid-colour (no texture) sprites scale their
+    /// nearest-neighbour sampling. Solid-colour (no texture) sprites scale their
     /// width/height instead. Useful for soft glow textures that would look too
     /// small at 1:1 — at 2× or 3× the smooth falloff still reads well.
     int         scale     = 1;
