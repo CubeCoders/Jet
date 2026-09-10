@@ -3,6 +3,8 @@
 #include <cmath>
 #include "TrigLUT.hpp"
 #include "FastMath.hpp"
+#include "TriangleSpans.hpp"
+#include <type_traits>
 
 #if defined(CHECKERBOARD_MODE) && CHECKERBOARD_MODE && defined(FIELD_BUFFERS) && FIELD_BUFFERS
 #error "CHECKERBOARD_MODE and FIELD_BUFFERS (interlaced) cannot both be enabled. Each would render only one quarter of pixels per frame and interact destructively. Pick one."
@@ -302,7 +304,7 @@ static inline uint16_t jetModulateRGB565(uint16_t color,
 }
 
 namespace Renderer
-{    
+{
     inline bool Rasterizer::shouldDrawPixel(int x, int y, uint8_t alpha)
     {
         #if NOISE_ALPHA
@@ -316,7 +318,7 @@ namespace Renderer
         {
             return true; // Draw all pixels
         }
-        
+
         // Precomputed threshold matrix flattened into a 1D array for faster access
         constexpr uint8_t thresholdMatrix[16] = {
             15, 135, 45, 165,
@@ -857,7 +859,15 @@ namespace Renderer
 
         // Interlaced mode uses renderEvenLines as a row-start offset; checkerboard
         // mode renders every row (the per-pixel column skip happens inside the x-loop).
-        const int yStart = interlacedMode ? (minY + (int)renderEvenLines) : minY;
+        int yStart = interlacedMode ? (minY + (int)renderEvenLines) : minY;
+        Detail::TriangleSpans spans({v1.position.x, v1.position.y},
+                                   {v2.position.x, v2.position.y},
+                                   {v3.position.x, v3.position.y}, yStart, inc);
+        // Keep the original solver for inverted horizontal bounds. In
+        // half-width mode its truncating slot division can still yield a
+        // slot at x=screenWidth; changing that clipping behavior is separate.
+        if (minX > maxX) spans.valid = false;
+        if (spans.valid) yStart = spans.firstY;
         int64_t w0_row = (int64_t)dw0_dx * (minX - v3.position.x)
                        + (int64_t)dw0_dy * (yStart - v3.position.y);
         int64_t w1_row = (int64_t)dw1_dx * (minX - v1.position.x)
@@ -869,823 +879,849 @@ namespace Renderer
         // Bounded by screenWidth/xStep (≤240) so int32 is sufficient.
         const int32_t iMaxRow = (maxX - minX) / xStep;
 
-        for (int y = yStart; y <= maxY;
-             y += inc, w0_row += dw0_dy_step, w1_row += dw1_dy_step, w2_row += dw2_dy_step)
-        {
-            // --- Scanline range: find first and last x inside the triangle.
-            //
-            // The edge function is linear in x with known int32 slope per
-            // xStep, so we can solve for the x-range where all three
-            // edges are non-negative without iterating pixel-by-pixel.
-            //
-            // For each edge with value ew_j at x=minX and slope d_j per
-            // xStep:
-            //   d_j > 0 : ew_j + i*d_j >= 0 iff i >= ceil(-ew_j / d_j)
-            //   d_j < 0 : ew_j + i*d_j >= 0 iff i <= floor(ew_j / -d_j)
-            //   d_j == 0: ew_j < 0 kills the whole row; else no constraint
-            //
-            // iStart/iEnd are bounded by iMaxRow (≤240): int32 is fine.
-            // The EW accumulators are int64 (near-camera vertices can push
-            // them out of int32 range), but the skip-check below guarantees
-            // EW fits in int32 by the time we actually divide — so we can
-            // use the Xtensa hardware 32-bit divider instead of the ~70-cycle
-            // soft 64-bit __divdi3/__moddi3 routines.
-            int32_t iStart = 0;
-            int32_t iEnd   = iMaxRow;
-            bool skipRow = false;
-
-            // ceil(num/D) > iEnd  iff  num > D*iEnd  (D, iEnd both int32,
-            // product ≤ max_D * 240 which stays well inside int32).
-            // floor(EW/negD) > iEnd  iff  EW > negD*iEnd  (same bounds).
-            // When the skip condition is false, EW (or num) ≤ D*iEnd fits
-            // in int32, so the division below uses 32-bit hardware arithmetic.
-            #define JET_EDGE_RANGE(EW, D)                                                       \
-                do {                                                                              \
-                    if ((D) > 0) {                                                                \
-                        if ((EW) < 0) {                                                           \
-                            int64_t num = -(EW);                                                  \
-                            if (num > (int64_t)(D) * iEnd) {                                      \
-                                /* req > iEnd → row is empty */                                   \
-                                skipRow = true;                                                   \
-                            } else {                                                              \
-                                /* num ≤ D*iEnd: fits in int32, use hw 32-bit divide */           \
-                                int32_t req = ((int32_t)num + (D) - 1) / (D);                    \
-                                if (req > iStart) iStart = req;                                   \
-                            }                                                                     \
-                        }                                                                         \
-                    } else if ((D) < 0) {                                                         \
-                        if ((EW) < 0) { skipRow = true; }                                         \
-                        else {                                                                    \
-                            int32_t negD = -(D);                                                  \
-                            if ((EW) > (int64_t)negD * iEnd) {                                    \
-                                /* floor(EW/negD) > iEnd → no tightening needed, skip divide */  \
-                            } else {                                                              \
-                                /* EW ≤ negD*iEnd: fits in int32, use hw 32-bit divide */         \
-                                int32_t req = (int32_t)(EW) / negD;                               \
-                                if (req < iEnd) iEnd = req;                                       \
-                            }                                                                     \
-                        }                                                                         \
-                    } else { /* D == 0 */                                                         \
-                        if ((EW) < 0) skipRow = true;                                             \
-                    }                                                                             \
-                } while (0)
-
-            JET_EDGE_RANGE(w0_row, dw0_dx_step);
-            if (!skipRow) JET_EDGE_RANGE(w1_row, dw1_dx_step);
-            if (!skipRow) JET_EDGE_RANGE(w2_row, dw2_dx_step);
-            #undef JET_EDGE_RANGE
-
-            if (skipRow || iStart > iEnd) continue;
-
-            // Advance ew accumulators to the first inside x.
-            int64_t ew0 = w0_row + (int64_t)dw0_dx_step * iStart;
-            int64_t ew1 = w1_row + (int64_t)dw1_dx_step * iStart;
-            int64_t ew2 = w2_row + (int64_t)dw2_dx_step * iStart;
-
-            const int xStart = minX + iStart * xStep;
-            const int xEnd   = minX + iEnd   * xStep;
-
-            // Wireframe / outline mode. The per-row solver above already
-            // gave us the leftmost and rightmost x for this scanline of
-            // the triangle; plotting just those two pixels (one when the
-            // row is a single pixel wide, e.g. at the top/bottom apex)
-            // traces the triangle's silhouette. We skip the entire span
-            // body — no z-buffer, no lighting, no texturing, no dither —
-            // which is what the production fill path was eating cycles
-            // on for huge near-camera triangles in the previous
-            // Bresenham-edge implementation. The fill is replaced with
-            // at most two stores per scanline.
-            if (wireframeMode)
-            {
-                const uint16_t wireColor = material->color;
-                auto plotWire = [this, wireColor](int px, int py) {
-#if HALF_WIDTH_BUFFERS
-    #if FIELD_BUFFERS
-                    framebuffer[(py >> 1) * (screenWidth / 2) + (px >> 1)] = wireColor;
-    #else
-                    framebuffer[py * (screenWidth / 2) + (px >> 1)] = wireColor;
-    #endif
-#else
-    #if FIELD_BUFFERS
-                    framebuffer[(py >> 1) * screenWidth + px] = wireColor;
-    #else
-                    framebuffer[py * screenWidth + px] = wireColor;
-    #endif
+        // Specialize once per triangle so the simple-span build can discard
+        // unused barycentric row updates on the incremental path. Inlining
+        // also keeps both row loops in drawTriangle's IRAM section on ESP32.
+        auto rasterRows = [&](auto useSpans)
+#if defined(__GNUC__)
+            __attribute__((always_inline))
 #endif
-                };
-                plotWire(xStart, y);
-                if (xEnd != xStart) plotWire(xEnd, y);
-                continue;
-            }
-
-#if MAX_PICK_QUERIES > 0
-            // Per-row screen-space pick test. Cheap (MAX_PICK_QUERIES is
-            // tiny and compile-time bounded) and sees every triangle that
-            // covers the queried pixel regardless of which fast/slow
-            // span path the rasterizer takes below. We don't try to
-            // emulate per-pixel screen-door stipple or texture-key holes
-            // picking semantics here are "which surface intersects
-            // this screen-space ray", which is what the host actually
-            // wants for mouse-over / cursor selection. Z arbitration is
-            // strictly closer-wins so the result matches the visible
-            // painter-sorted / Z-buffered scene.
-            if (pickQueries && pickResults && pickQueryCount > 0)
+        {
+            auto advanceSpans = [&]() {
+                if constexpr (decltype(useSpans)::value) spans.advance();
+            };
+            for (int y = yStart; y <= maxY;
+                 y += inc, w0_row += dw0_dy_step, w1_row += dw1_dy_step, w2_row += dw2_dy_step, advanceSpans())
             {
-                // Triangle-effective Z. With FAST_Z this is already
-                // the constant `z` set up at the top of drawTriangle;
-                // without FAST_Z we don't have per-pixel Z here yet (it
-                // would need a barycentric eval per query) so fall back
-                // to the triangle average - still good enough for
-                // ordering since hit triangles are typically small.
-                int32_t pickZ;
-            #if FAST_Z
-                pickZ = z;
-            #else
-                pickZ = (v1.position.z + v2.position.z + v3.position.z) / 3;
-            #endif
-                for (int p = 0; p < pickQueryCount; ++p)
+                int32_t iStart, iEnd;
+                bool skipRow = false;
+                if constexpr (decltype(useSpans)::value) {
+                    spans.beginRow(y, inc);
+                    const int32_t left = spans.left.x + (spans.left.remainder != 0);
+                    const int32_t right = spans.right.x;
+                    if (left > maxX || right < minX) continue;
+                    iStart = (std::max(left, minX) - minX + xStep - 1) / xStep;
+                    iEnd = (std::min(right, maxX) - minX) / xStep;
+                } else {
+                // --- Scanline range: find first and last x inside the triangle.
+                //
+                // The edge function is linear in x with known int32 slope per
+                // xStep, so we can solve for the x-range where all three
+                // edges are non-negative without iterating pixel-by-pixel.
+                //
+                // For each edge with value ew_j at x=minX and slope d_j per
+                // xStep:
+                //   d_j > 0 : ew_j + i*d_j >= 0 iff i >= ceil(-ew_j / d_j)
+                //   d_j < 0 : ew_j + i*d_j >= 0 iff i <= floor(ew_j / -d_j)
+                //   d_j == 0: ew_j < 0 kills the whole row; else no constraint
+                //
+                // iStart/iEnd are bounded by iMaxRow (≤240): int32 is fine.
+                // The EW accumulators are int64 (near-camera vertices can push
+                // them out of int32 range), but the skip-check below guarantees
+                // EW fits in int32 by the time we actually divide — so we can
+                // use the Xtensa hardware 32-bit divider instead of the ~70-cycle
+                // soft 64-bit __divdi3/__moddi3 routines.
+                iStart = 0;
+                iEnd = iMaxRow;
+
+
+                // ceil(num/D) > iEnd  iff  num > D*iEnd  (D, iEnd both int32,
+                // product ≤ max_D * 240 which stays well inside int32).
+                // floor(EW/negD) > iEnd  iff  EW > negD*iEnd  (same bounds).
+                // When the skip condition is false, EW (or num) ≤ D*iEnd fits
+                // in int32, so the division below uses 32-bit hardware arithmetic.
+                #define JET_EDGE_RANGE(EW, D)                                                       \
+                    do {                                                                              \
+                        if ((D) > 0) {                                                                \
+                            if ((EW) < 0) {                                                           \
+                                int64_t num = -(EW);                                                  \
+                                if (num > (int64_t)(D) * iEnd) {                                      \
+                                    /* req > iEnd → row is empty */                                   \
+                                    skipRow = true;                                                   \
+                                } else {                                                              \
+                                    /* num ≤ D*iEnd: fits in int32, use hw 32-bit divide */           \
+                                    int32_t req = ((int32_t)num + (D) - 1) / (D);                    \
+                                    if (req > iStart) iStart = req;                                   \
+                                }                                                                     \
+                            }                                                                         \
+                        } else if ((D) < 0) {                                                         \
+                            if ((EW) < 0) { skipRow = true; }                                         \
+                            else {                                                                    \
+                                int32_t negD = -(D);                                                  \
+                                if ((EW) > (int64_t)negD * iEnd) {                                    \
+                                    /* floor(EW/negD) > iEnd → no tightening needed, skip divide */  \
+                                } else {                                                              \
+                                    /* EW ≤ negD*iEnd: fits in int32, use hw 32-bit divide */         \
+                                    int32_t req = (int32_t)(EW) / negD;                               \
+                                    if (req < iEnd) iEnd = req;                                       \
+                                }                                                                     \
+                            }                                                                         \
+                        } else { /* D == 0 */                                                         \
+                            if ((EW) < 0) skipRow = true;                                             \
+                        }                                                                             \
+                    } while (0)
+
+                JET_EDGE_RANGE(w0_row, dw0_dx_step);
+                if (!skipRow) JET_EDGE_RANGE(w1_row, dw1_dx_step);
+                if (!skipRow) JET_EDGE_RANGE(w2_row, dw2_dx_step);
+                #undef JET_EDGE_RANGE
+
+                }
+
+                if (skipRow || iStart > iEnd) continue;
+
+                // Advance ew accumulators to the first inside x.
+                int64_t ew0 = w0_row + (int64_t)dw0_dx_step * iStart;
+                int64_t ew1 = w1_row + (int64_t)dw1_dx_step * iStart;
+                int64_t ew2 = w2_row + (int64_t)dw2_dx_step * iStart;
+
+                const int xStart = minX + iStart * xStep;
+                const int xEnd   = minX + iEnd   * xStep;
+
+                // Wireframe / outline mode. The per-row solver above already
+                // gave us the leftmost and rightmost x for this scanline of
+                // the triangle; plotting just those two pixels (one when the
+                // row is a single pixel wide, e.g. at the top/bottom apex)
+                // traces the triangle's silhouette. We skip the entire span
+                // body — no z-buffer, no lighting, no texturing, no dither —
+                // which is what the production fill path was eating cycles
+                // on for huge near-camera triangles in the previous
+                // Bresenham-edge implementation. The fill is replaced with
+                // at most two stores per scanline.
+                if (wireframeMode)
                 {
-                    const PickQuery& q = pickQueries[p];
-                    if (q.x < 0 || q.y < 0) continue;          // disabled slot
-                    if (q.y != y) continue;                    // wrong row
-                    // HALF_WIDTH_BUFFERS rasterises in 2-pixel xStep; snap
-                    // the query x to the same 2-pixel grid before the
-                    // range check so an odd query x still hits the cell
-                    // the rasterizer actually wrote.
-                #if HALF_WIDTH_BUFFERS
-                    const int qx = q.x & ~1;
+                    const uint16_t wireColor = material->color;
+                    auto plotWire = [this, wireColor](int px, int py) {
+    #if HALF_WIDTH_BUFFERS
+        #if FIELD_BUFFERS
+                        framebuffer[(py >> 1) * (screenWidth / 2) + (px >> 1)] = wireColor;
+        #else
+                        framebuffer[py * (screenWidth / 2) + (px >> 1)] = wireColor;
+        #endif
+    #else
+        #if FIELD_BUFFERS
+                        framebuffer[(py >> 1) * screenWidth + px] = wireColor;
+        #else
+                        framebuffer[py * screenWidth + px] = wireColor;
+        #endif
+    #endif
+                    };
+                    plotWire(xStart, y);
+                    if (xEnd != xStart) plotWire(xEnd, y);
+                    continue;
+                }
+
+    #if MAX_PICK_QUERIES > 0
+                // Per-row screen-space pick test. Cheap (MAX_PICK_QUERIES is
+                // tiny and compile-time bounded) and sees every triangle that
+                // covers the queried pixel regardless of which fast/slow
+                // span path the rasterizer takes below. We don't try to
+                // emulate per-pixel screen-door stipple or texture-key holes
+                // picking semantics here are "which surface intersects
+                // this screen-space ray", which is what the host actually
+                // wants for mouse-over / cursor selection. Z arbitration is
+                // strictly closer-wins so the result matches the visible
+                // painter-sorted / Z-buffered scene.
+                if (pickQueries && pickResults && pickQueryCount > 0)
+                {
+                    // Triangle-effective Z. With FAST_Z this is already
+                    // the constant `z` set up at the top of drawTriangle;
+                    // without FAST_Z we don't have per-pixel Z here yet (it
+                    // would need a barycentric eval per query) so fall back
+                    // to the triangle average - still good enough for
+                    // ordering since hit triangles are typically small.
+                    int32_t pickZ;
+                #if FAST_Z
+                    pickZ = z;
                 #else
-                    const int qx = q.x;
+                    pickZ = (v1.position.z + v2.position.z + v3.position.z) / 3;
                 #endif
-                    if (qx < xStart || qx > xEnd) continue;
-                    PickResult& r = pickResults[p];
-                    if (!r.hit || pickZ < r.depth)
+                    for (int p = 0; p < pickQueryCount; ++p)
                     {
-                        r.hit           = true;
-                        r.object        = currentPickObject;
-                        r.triangleIndex = currentPickTriangleIndex;
-                        r.depth         = pickZ;
-                        r.x             = (int16_t)qx;
-                        r.y             = (int16_t)y;
+                        const PickQuery& q = pickQueries[p];
+                        if (q.x < 0 || q.y < 0) continue;          // disabled slot
+                        if (q.y != y) continue;                    // wrong row
+                        // HALF_WIDTH_BUFFERS rasterises in 2-pixel xStep; snap
+                        // the query x to the same 2-pixel grid before the
+                        // range check so an odd query x still hits the cell
+                        // the rasterizer actually wrote.
+                    #if HALF_WIDTH_BUFFERS
+                        const int qx = q.x & ~1;
+                    #else
+                        const int qx = q.x;
+                    #endif
+                        if (qx < xStart || qx > xEnd) continue;
+                        PickResult& r = pickResults[p];
+                        if (!r.hit || pickZ < r.depth)
+                        {
+                            r.hit           = true;
+                            r.object        = currentPickObject;
+                            r.triangleIndex = currentPickTriangleIndex;
+                            r.depth         = pickZ;
+                            r.x             = (int16_t)qx;
+                            r.y             = (int16_t)y;
+                        }
                     }
                 }
-            }
-#endif // MAX_PICK_QUERIES > 0
+    #endif // MAX_PICK_QUERIES > 0
 
-#if LIGHTING
-            // Per-row Gouraud brightness init. Computed in int64 because
-            // the numerator can be up to 1533 * |denom| and we shift left
-            // by 16 for Q16 precision; divided once per row instead of
-            // once per pixel.
-            int32_t brightness_q16 = 0;
-            if (useIncrementalGouraud)
-            {
-                const int64_t bRowNum = (int64_t)vertexBrightness[0] * ew0
-                                      + (int64_t)vertexBrightness[1] * ew1
-                                      + (int64_t)vertexBrightness[2] * ew2;
-                // See note at brightness_dx_step_q16 setup: divide by
-                // the full-precision int64 denom or super-near triangles
-                // flash dark when denom64 overflows int32.
-                brightness_q16 = (int32_t)((float)bRowNum * 65536.0f * invDenom64f);
-            }
-#endif
-
-            // WATER_REFLECT: precompute the framebuffer row-base for the
-            // mirror scanline (screenH-1-y ± ripple).  clearBuffers() has
-            // already filled every row with the sky gradient, so upper rows
-            // contain sky even before any geometry is drawn.  Anything
-            // rendered before this water object (rocks, hills, etc.) is
-            // also present — giving true screen-space reflections for free.
-            // Colour is set per-pixel in the fast-span and general paths.
-            // Intentionally outside #if LIGHTING — works with LIGHTING=0.
-            int32_t waterMirrorBufBase = 0;
-            uint8_t waterReflectAlpha = material->alpha;
-            bool waterSkyFallback = false;
-            if (isWaterReflect)
-            {
-                // `specular` expresses ripple amplitude in pixels at a
-                // canonical 800-pixel reference height.  Scaling by
-                // screenHeight/800 keeps the visual ripple consistent
-                // across resolutions: 28 → 28 px on 800p desktop,
-                // 28 → ~8 px on 240p ESP32.
-                const int amp    = (int)material->specular * screenHeight / 2400; // /3 of original
-                // Perspective-correct wave density: waves should appear compressed
-                // (denser) near the horizon where geometry is far away, and stretched
-                // (sparser) near the camera.  (screenHeight - y) is large at the top of
-                // the screen (horizon side) and approaches 0 at the very bottom (camera
-                // side), so squaring it produces the right quadratic phase accumulation —
-                // many wave cycles near the waterline, fewer toward the viewer.
-                // Cost: one extra multiply and a divide versus the old linear y*5.
-                const int perspY = screenHeight - y;
-                const int angle  = ((perspY * perspY * 20 / screenHeight + (int)(waterTime * 240.0f)) % 360 + 360) % 360;
-                //const int angle = ((y * 5 + (int)(waterTime * 240.0f)) % 360 + 360) % 360; //MB: This version doesn't take perspective into account, so waves look the same near and far, which is less realistic but more performant.
-                const int ripple = (lookupSinI(angle) * amp) >> 10; // Q10 → pixels
-                // Use the camera-pitch-correct waterline as the mirror axis:
-                // mirrorY = 2*waterlineY - y gives geometrically accurate
-                // reflections for objects at any distance. Falls back to
-                // screen-centre (screenHeight/2) if waterlineY wasn't set.
-                const int wl    = (waterlineY > 0) ? waterlineY : (screenHeight / 2);
-                // waterYBias nudges the sampled row downward (larger mirrorY =
-                // lower on screen) to fine-tune the apparent reflection height.
-                int mirrorY = 2 * wl - y + ripple + (int)material->waterYBias;
-                // Sky fallback: when the reflection would sample off the top of
-                // the screen, use gradientColors[0] (the topmost sky colour)
-                // as the reflected pixel so the blend picks up the right sky hue
-                // instead of repeating framebuffer row 0.
-                waterSkyFallback = mirrorY < 0 &&
-                                   gradientColors != nullptr &&
-                                   gradientSize > 0;
-                if (mirrorY < 0)             mirrorY = 0;
-                if (mirrorY >= screenHeight) mirrorY = screenHeight - 1;
-                constexpr int kSsrTopFadePx = 32;
-                if (mirrorY < kSsrTopFadePx) {
-                    waterReflectAlpha = (uint8_t)(((uint16_t)material->alpha * mirrorY) / kSsrTopFadePx);
+    #if LIGHTING
+                // Per-row Gouraud brightness init. Computed in int64 because
+                // the numerator can be up to 1533 * |denom| and we shift left
+                // by 16 for Q16 precision; divided once per row instead of
+                // once per pixel.
+                int32_t brightness_q16 = 0;
+                if (useIncrementalGouraud)
+                {
+                    const int64_t bRowNum = (int64_t)vertexBrightness[0] * ew0
+                                          + (int64_t)vertexBrightness[1] * ew1
+                                          + (int64_t)vertexBrightness[2] * ew2;
+                    // See note at brightness_dx_step_q16 setup: divide by
+                    // the full-precision int64 denom or super-near triangles
+                    // flash dark when denom64 overflows int32.
+                    brightness_q16 = (int32_t)((float)bRowNum * 65536.0f * invDenom64f);
                 }
-#if HALF_WIDTH_BUFFERS
-  #if FIELD_BUFFERS
-                waterMirrorBufBase = (mirrorY >> 1) * (screenWidth / 2);
-  #else
-                waterMirrorBufBase = mirrorY * (screenWidth / 2);
-  #endif
-#else
-  #if FIELD_BUFFERS
-                waterMirrorBufBase = (mirrorY >> 1) * screenWidth;
-  #else
-                waterMirrorBufBase = mirrorY * screenWidth;
-  #endif
-#endif
-            }
+    #endif
 
-#if JET_FAST_SIMPLE_SPANS
-#if TEXTURE_MAPPING
-            // Untextured triangles take the fast simple-span path even in
-            // builds where TEXTURE_MAPPING is compiled in. Textured ones
-            // fall through to the general per-pixel loop below.
-            if (useFastSimpleSpan)
-#endif
-            {
-            // Fast simple-span path. See JET_FAST_SIMPLE_SPANS comment at
-            // the top of the TU. Skips per-pixel edge accumulate/test (the
-            // solver above already bounded x to the inside range) and the
-            // per-pixel dither lookup (alpha is triangle-constant in this
-            // config, so the mask reduces to two per-row booleans).
-            (void)ew0; (void)ew1; (void)ew2;  // Unused in this path.
-#if FIELD_BUFFERS
-            int32_t bufferIndex = (y >> 1) * (screenWidth / 2) + (xStart / 2);
-#else
-            int32_t bufferIndex = y * (screenWidth / 2) + (xStart / 2);
-#endif
-#if SCREEN_DOOR_ALPHA
-            bool drawP0, drawP2;
-            if (alpha > 240) {
-                drawP0 = drawP2 = true;
-            } else {
-                // Same 4x4 Bayer matrix as shouldDrawPixel, but we only
-                // need the two phases that HALF_WIDTH actually steps
-                // through (x%4 \u2208 {0, 2} when xStart is 2-aligned).
-                constexpr uint8_t thresholdMatrix[16] = {
-                    15, 135, 45, 165,
-                    195, 75, 225, 105,
-                    60, 180, 30, 150,
-                    240, 120, 210, 90};
-                const int yRow = (y & 3) << 2;
-                drawP0 = alpha >= thresholdMatrix[0 | yRow];
-                drawP2 = alpha >= thresholdMatrix[2 | yRow];
-            }
-            if (!drawP0 && !drawP2) continue;  // whole row dithered out
+                // WATER_REFLECT: precompute the framebuffer row-base for the
+                // mirror scanline (screenH-1-y ± ripple).  clearBuffers() has
+                // already filled every row with the sky gradient, so upper rows
+                // contain sky even before any geometry is drawn.  Anything
+                // rendered before this water object (rocks, hills, etc.) is
+                // also present — giving true screen-space reflections for free.
+                // Colour is set per-pixel in the fast-span and general paths.
+                // Intentionally outside #if LIGHTING — works with LIGHTING=0.
+                int32_t waterMirrorBufBase = 0;
+                uint8_t waterReflectAlpha = material->alpha;
+                bool waterSkyFallback = false;
+                if (isWaterReflect)
+                {
+                    // `specular` expresses ripple amplitude in pixels at a
+                    // canonical 800-pixel reference height.  Scaling by
+                    // screenHeight/800 keeps the visual ripple consistent
+                    // across resolutions: 28 → 28 px on 800p desktop,
+                    // 28 → ~8 px on 240p ESP32.
+                    const int amp    = (int)material->specular * screenHeight / 2400; // /3 of original
+                    // Perspective-correct wave density: waves should appear compressed
+                    // (denser) near the horizon where geometry is far away, and stretched
+                    // (sparser) near the camera.  (screenHeight - y) is large at the top of
+                    // the screen (horizon side) and approaches 0 at the very bottom (camera
+                    // side), so squaring it produces the right quadratic phase accumulation —
+                    // many wave cycles near the waterline, fewer toward the viewer.
+                    // Cost: one extra multiply and a divide versus the old linear y*5.
+                    const int perspY = screenHeight - y;
+                    const int angle  = ((perspY * perspY * 20 / screenHeight + (int)(waterTime * 240.0f)) % 360 + 360) % 360;
+                    //const int angle = ((y * 5 + (int)(waterTime * 240.0f)) % 360 + 360) % 360; //MB: This version doesn't take perspective into account, so waves look the same near and far, which is less realistic but more performant.
+                    const int ripple = (lookupSinI(angle) * amp) >> 10; // Q10 → pixels
+                    // Use the camera-pitch-correct waterline as the mirror axis:
+                    // mirrorY = 2*waterlineY - y gives geometrically accurate
+                    // reflections for objects at any distance. Falls back to
+                    // screen-centre (screenHeight/2) if waterlineY wasn't set.
+                    const int wl    = (waterlineY > 0) ? waterlineY : (screenHeight / 2);
+                    // waterYBias nudges the sampled row downward (larger mirrorY =
+                    // lower on screen) to fine-tune the apparent reflection height.
+                    int mirrorY = 2 * wl - y + ripple + (int)material->waterYBias;
+                    // Sky fallback: when the reflection would sample off the top of
+                    // the screen, use gradientColors[0] (the topmost sky colour)
+                    // as the reflected pixel so the blend picks up the right sky hue
+                    // instead of repeating framebuffer row 0.
+                    waterSkyFallback = mirrorY < 0 &&
+                                       gradientColors != nullptr &&
+                                       gradientSize > 0;
+                    if (mirrorY < 0)             mirrorY = 0;
+                    if (mirrorY >= screenHeight) mirrorY = screenHeight - 1;
+                    constexpr int kSsrTopFadePx = 32;
+                    if (mirrorY < kSsrTopFadePx) {
+                        waterReflectAlpha = (uint8_t)(((uint16_t)material->alpha * mirrorY) / kSsrTopFadePx);
+                    }
+    #if HALF_WIDTH_BUFFERS
+      #if FIELD_BUFFERS
+                    waterMirrorBufBase = (mirrorY >> 1) * (screenWidth / 2);
+      #else
+                    waterMirrorBufBase = mirrorY * (screenWidth / 2);
+      #endif
+    #else
+      #if FIELD_BUFFERS
+                    waterMirrorBufBase = (mirrorY >> 1) * screenWidth;
+      #else
+                    waterMirrorBufBase = mirrorY * screenWidth;
+      #endif
+    #endif
+                }
 
-            if (drawP0 && drawP2) {
-                // Solid fill: pair adjacent uint16 stores into 32-bit
-                // writes when alignment permits. Halves the store count on
-                // the hot path - this is where most of the per-frame time
-                // goes for near-opaque geometry.
-                fillRGB565Span(framebuffer, bufferIndex, ((xEnd - xStart) >> 1) + 1, color);
-            } else {
-                // Alternating fill: only one of the two phases draws. Pick
-                // the matching phase bool and stride by 4 pixels (2 slots).
-                const bool startIsP0 = ((xStart & 3) == 0);
-                const bool drawFirst = startIsP0 ? drawP0 : drawP2;
-                int x = xStart;
-                if (!drawFirst) { x += 2; bufferIndex++; }
-                for (; x <= xEnd; x += 4, bufferIndex += 2) {
-                    framebuffer[bufferIndex] = color;
+    #if JET_FAST_SIMPLE_SPANS
+    #if TEXTURE_MAPPING
+                // Untextured triangles take the fast simple-span path even in
+                // builds where TEXTURE_MAPPING is compiled in. Textured ones
+                // fall through to the general per-pixel loop below.
+                if (useFastSimpleSpan)
+    #endif
+                {
+                // Fast simple-span path. See JET_FAST_SIMPLE_SPANS comment at
+                // the top of the TU. Skips per-pixel edge accumulate/test (the
+                // solver above already bounded x to the inside range) and the
+                // per-pixel dither lookup (alpha is triangle-constant in this
+                // config, so the mask reduces to two per-row booleans).
+                (void)ew0; (void)ew1; (void)ew2;  // Unused in this path.
+    #if FIELD_BUFFERS
+                int32_t bufferIndex = (y >> 1) * (screenWidth / 2) + (xStart / 2);
+    #else
+                int32_t bufferIndex = y * (screenWidth / 2) + (xStart / 2);
+    #endif
+    #if SCREEN_DOOR_ALPHA
+                bool drawP0, drawP2;
+                if (alpha > 240) {
+                    drawP0 = drawP2 = true;
+                } else {
+                    // Same 4x4 Bayer matrix as shouldDrawPixel, but we only
+                    // need the two phases that HALF_WIDTH actually steps
+                    // through (x%4 \u2208 {0, 2} when xStart is 2-aligned).
+                    constexpr uint8_t thresholdMatrix[16] = {
+                        15, 135, 45, 165,
+                        195, 75, 225, 105,
+                        60, 180, 30, 150,
+                        240, 120, 210, 90};
+                    const int yRow = (y & 3) << 2;
+                    drawP0 = alpha >= thresholdMatrix[0 | yRow];
+                    drawP2 = alpha >= thresholdMatrix[2 | yRow];
                 }
-            }
-#else  // !SCREEN_DOOR_ALPHA
-            // Traditional alpha-blend path. For fully-opaque triangles we
-            // still emit the paired 32-bit fast stores; sub-opaque ones
-            // fall through to a per-pixel "over" blend against the
-            // existing framebuffer contents.
-            if (plainOpaqueReplace) {
-                fillRGB565Span(framebuffer, bufferIndex, ((xEnd - xStart) >> 1) + 1, color);
-            } else if (isWaterReflect) {
-                // Screen-space reflection: read each pixel from the mirror
-                // row already written in the framebuffer (sky gradient +
-                // any geometry drawn before this water object).
-                // When reflectBuffer is set (SSR_FIELD_REFLECT), read from
-                // the previous field instead — depth-independent, fully
-                // committed prior frame.
-                // mirrorIdx steps in x-lockstep with bufferIndex.
-                const uint16_t* srcBuf = reflectBuffer ? reflectBuffer : framebuffer;
-                int32_t mirrorIdx = waterMirrorBufBase + xStart / 2;
-                const uint16_t skyCol = waterSkyFallback ? gradientColors[0] : 0;
-                for (int x = xStart; x <= xEnd; x += 2, bufferIndex++, mirrorIdx++) {
-                    const uint16_t reflPx = waterSkyFallback ? skyCol : srcBuf[mirrorIdx];
-                    framebuffer[bufferIndex] = blendRGB565(material->color,
-                                                           reflPx,
-                                                           waterReflectAlpha);
+                if (!drawP0 && !drawP2) continue;  // whole row dithered out
+
+                if (drawP0 && drawP2) {
+                    // Solid fill: pair adjacent uint16 stores into 32-bit
+                    // writes when alignment permits. Halves the store count on
+                    // the hot path - this is where most of the per-frame time
+                    // goes for near-opaque geometry.
+                    fillRGB565Span(framebuffer, bufferIndex, ((xEnd - xStart) >> 1) + 1, color);
+                } else {
+                    // Alternating fill: only one of the two phases draws. Pick
+                    // the matching phase bool and stride by 4 pixels (2 slots).
+                    const bool startIsP0 = ((xStart & 3) == 0);
+                    const bool drawFirst = startIsP0 ? drawP0 : drawP2;
+                    int x = xStart;
+                    if (!drawFirst) { x += 2; bufferIndex++; }
+                    for (; x <= xEnd; x += 4, bufferIndex += 2) {
+                        framebuffer[bufferIndex] = color;
+                    }
                 }
-            } else if (isAdditive) {
-                // Saturating-add: source scaled by alpha then added to destination.
-                // alpha==255 fast path skips the per-channel multiply.
-                if (alpha == 255) {
-                    for (int x = xStart; x <= xEnd; x += 2, bufferIndex++) {
-                        const uint16_t d = framebuffer[bufferIndex];
-                        uint32_t r = ((d >> 11) & 0x1Fu) + ((color >> 11) & 0x1Fu); if (r > 0x1Fu) r = 0x1Fu;
-                        uint32_t g = ((d >>  5) & 0x3Fu) + ((color >>  5) & 0x3Fu); if (g > 0x3Fu) g = 0x3Fu;
-                        uint32_t b = ( d        & 0x1Fu) + ( color        & 0x1Fu); if (b > 0x1Fu) b = 0x1Fu;
-                        framebuffer[bufferIndex] = (uint16_t)((r << 11) | (g << 5) | b);
+    #else  // !SCREEN_DOOR_ALPHA
+                // Traditional alpha-blend path. For fully-opaque triangles we
+                // still emit the paired 32-bit fast stores; sub-opaque ones
+                // fall through to a per-pixel "over" blend against the
+                // existing framebuffer contents.
+                if (plainOpaqueReplace) {
+                    fillRGB565Span(framebuffer, bufferIndex, ((xEnd - xStart) >> 1) + 1, color);
+                } else if (isWaterReflect) {
+                    // Screen-space reflection: read each pixel from the mirror
+                    // row already written in the framebuffer (sky gradient +
+                    // any geometry drawn before this water object).
+                    // When reflectBuffer is set (SSR_FIELD_REFLECT), read from
+                    // the previous field instead — depth-independent, fully
+                    // committed prior frame.
+                    // mirrorIdx steps in x-lockstep with bufferIndex.
+                    const uint16_t* srcBuf = reflectBuffer ? reflectBuffer : framebuffer;
+                    int32_t mirrorIdx = waterMirrorBufBase + xStart / 2;
+                    const uint16_t skyCol = waterSkyFallback ? gradientColors[0] : 0;
+                    for (int x = xStart; x <= xEnd; x += 2, bufferIndex++, mirrorIdx++) {
+                        const uint16_t reflPx = waterSkyFallback ? skyCol : srcBuf[mirrorIdx];
+                        framebuffer[bufferIndex] = blendRGB565(material->color,
+                                                               reflPx,
+                                                               waterReflectAlpha);
+                    }
+                } else if (isAdditive) {
+                    // Saturating-add: source scaled by alpha then added to destination.
+                    // alpha==255 fast path skips the per-channel multiply.
+                    if (alpha == 255) {
+                        for (int x = xStart; x <= xEnd; x += 2, bufferIndex++) {
+                            const uint16_t d = framebuffer[bufferIndex];
+                            uint32_t r = ((d >> 11) & 0x1Fu) + ((color >> 11) & 0x1Fu); if (r > 0x1Fu) r = 0x1Fu;
+                            uint32_t g = ((d >>  5) & 0x3Fu) + ((color >>  5) & 0x3Fu); if (g > 0x3Fu) g = 0x3Fu;
+                            uint32_t b = ( d        & 0x1Fu) + ( color        & 0x1Fu); if (b > 0x1Fu) b = 0x1Fu;
+                            framebuffer[bufferIndex] = (uint16_t)((r << 11) | (g << 5) | b);
+                        }
+                    } else {
+                        for (int x = xStart; x <= xEnd; x += 2, bufferIndex++) {
+                            framebuffer[bufferIndex] = addBlendRGB565(framebuffer[bufferIndex], color, alpha);
+                        }
                     }
                 } else {
                     for (int x = xStart; x <= xEnd; x += 2, bufferIndex++) {
-                        framebuffer[bufferIndex] = addBlendRGB565(framebuffer[bufferIndex], color, alpha);
+                        framebuffer[bufferIndex] = blendRGB565(framebuffer[bufferIndex], color, alpha);
                     }
                 }
-            } else {
-                for (int x = xStart; x <= xEnd; x += 2, bufferIndex++) {
-                    framebuffer[bufferIndex] = blendRGB565(framebuffer[bufferIndex], color, alpha);
-                }
-            }
-#endif // SCREEN_DOOR_ALPHA
-            }  // close fast simple-span block
-#if TEXTURE_MAPPING
-            else
-#endif
-#endif // JET_FAST_SIMPLE_SPANS
+    #endif // SCREEN_DOOR_ALPHA
+                }  // close fast simple-span block
+    #if TEXTURE_MAPPING
+                else
+    #endif
+    #endif // JET_FAST_SIMPLE_SPANS
 
-#if !JET_FAST_SIMPLE_SPANS || TEXTURE_MAPPING
-            {  // General per-pixel path. Runs as the textured `else` when
-               // the fast path is also compiled (TEXTURE_MAPPING build),
-               // or unconditionally when JET_FAST_SIMPLE_SPANS is
-               // false (any of the heavy features enabled).
-// Per-pixel brightness step appended to the for-loop header below. The
-// step has to happen unconditionally per pixel (continues elsewhere in
-// the loop body would otherwise desync the running value), so it lives
-// in the increment list rather than the body.
-#if LIGHTING
-#define JET_LIT_STEP , brightness_q16 += brightness_dx_step_q16
-#else
-#define JET_LIT_STEP
-#endif
-#if HALF_WIDTH_BUFFERS
-#if FIELD_BUFFERS
-            int32_t bufferIndex = (y >> 1) * (screenWidth / 2) + (xStart / 2);
-#else
-            int32_t bufferIndex = y * (screenWidth / 2) + (xStart / 2);
-#endif
-        for (int x = xStart; x <= xEnd;
-             x += 2, ew0 += dw0_dx_step, ew1 += dw1_dx_step, ew2 += dw2_dx_step, bufferIndex++ JET_LIT_STEP)
-            {
-#else
-#if FIELD_BUFFERS
-            int32_t bufferIndex = (y >> 1) * screenWidth + xStart;
-#else
-            int32_t bufferIndex = y * screenWidth + xStart;
-#endif
-        for (int x = xStart; x <= xEnd;
-             x++, ew0 += dw0_dx_step, ew1 += dw1_dx_step, ew2 += dw2_dx_step, bufferIndex++ JET_LIT_STEP)
-            {
-#endif
-            // Z-buffer index. Stride matches the configured depth-buffer
-            // layout: half-width (one cell per two output pixels) when
-            // HALF_WIDTH_BUFFERS is on, otherwise per-pixel (same stride
-            // as the colour buffer). Set per-row.
-            #if Z_BUFFERING
-            int32_t zBufferIndex = y * ZBUFFER_STRIDE(screenWidth);
-            #endif
-
-                #if Z_BUFFERING
-                // If the z-buffer position is at its maximum for this pixel (as close to the camera as is possible), skip this pixel
-                // since it can't possibly be any closer.
-                if (zBuffer[zBufferIndex] == 0 && !ignoreZBuffer)
+    #if !JET_FAST_SIMPLE_SPANS || TEXTURE_MAPPING
+                {  // General per-pixel path. Runs as the textured `else` when
+                   // the fast path is also compiled (TEXTURE_MAPPING build),
+                   // or unconditionally when JET_FAST_SIMPLE_SPANS is
+                   // false (any of the heavy features enabled).
+    // Per-pixel brightness step appended to the for-loop header below. The
+    // step has to happen unconditionally per pixel (continues elsewhere in
+    // the loop body would otherwise desync the running value), so it lives
+    // in the increment list rather than the body.
+    #if LIGHTING
+    #define JET_LIT_STEP , brightness_q16 += brightness_dx_step_q16
+    #else
+    #define JET_LIT_STEP
+    #endif
+    #if HALF_WIDTH_BUFFERS
+    #if FIELD_BUFFERS
+                int32_t bufferIndex = (y >> 1) * (screenWidth / 2) + (xStart / 2);
+    #else
+                int32_t bufferIndex = y * (screenWidth / 2) + (xStart / 2);
+    #endif
+            for (int x = xStart; x <= xEnd;
+                 x += 2, ew0 += dw0_dx_step, ew1 += dw1_dx_step, ew2 += dw2_dx_step, bufferIndex++ JET_LIT_STEP)
                 {
-                    continue;
-                }
+    #else
+    #if FIELD_BUFFERS
+                int32_t bufferIndex = (y >> 1) * screenWidth + xStart;
+    #else
+                int32_t bufferIndex = y * screenWidth + xStart;
+    #endif
+            for (int x = xStart; x <= xEnd;
+                 x++, ew0 += dw0_dx_step, ew1 += dw1_dx_step, ew2 += dw2_dx_step, bufferIndex++ JET_LIT_STEP)
+                {
+    #endif
+                // Z-buffer index. Stride matches the configured depth-buffer
+                // layout: half-width (one cell per two output pixels) when
+                // HALF_WIDTH_BUFFERS is on, otherwise per-pixel (same stride
+                // as the colour buffer). Set per-row.
+                #if Z_BUFFERING
+                int32_t zBufferIndex = y * ZBUFFER_STRIDE(screenWidth);
                 #endif
 
-                // Inside test on the incrementally-stepped edge function.
-                // Comparing int64 with 0 only examines the high word, so
-                // this is cheap. The scanline range above already trimmed
-                // the iteration to (mostly) inside-only pixels, but a
-                // small shoulder can still be outside due to the integer
-                // ceil/floor rounding - keep the test as a safety net.
-                if ((ew0 | ew1 | ew2) < 0)
-                {
-                    continue;
-                }
-
-#if !HALF_WIDTH_BUFFERS
-                // Checkerboard: skip pixels that belong to the other frame's pattern.
-                // Using XOR parity: (x^y)&1 == (x+y)&1 (no carry in the lowest bit).
-                if (checkerboardMode && (((x ^ y) & 1) != cbFrameParity))
-                {
-                    continue;
-                }
-#endif
-
-                // For any inside pixel, |ew_i| <= |denom|. If any downstream
-                // code needs int32 barycentric weights (interpolation paths)
-                // they're safe to narrow here. The compiler DCEs these on
-                // the FAST_Z / no-texture / no-lighting fast path.
-                int32_t w0 = (int32_t)ew0;
-                int32_t w1 = (int32_t)ew1;
-                int32_t w2 = (int32_t)ew2;
-
-// Pixel is inside the triangle - render it
-// Interpolate z, u, v
-#if !FAST_Z
-                int32_t z = (v1.position.z * w0 + v2.position.z * w1 + v3.position.z * w2) / denom;
-
-                if (z < nearPlane || z > farPlane)
-                {
-                    continue;
-                }
-
-#if Z_BUFFERING
-                // Per-pixel Z bias in real depth units. Clamp to uint16
-                // for storage (matches the FAST_Z setup path).
-                int32_t zbRaw = z - zBias;
-                if (zbRaw < 0)     zbRaw = 0;
-                if (zbRaw > 65535) zbRaw = 65535;
-                uint32_t zb = (uint32_t)zbRaw;
-#endif
-
-#if Z_BRIGHTNESS
-                brightness = 255 - ((z - nearPlane) * 127) / (farPlane - nearPlane);
-                brightness = std::min(brightness, static_cast<uint16_t>(255));
-#endif
-#endif
-
-#if DEPTH_ALPHA_BLEND && !FAST_Z
-                // Per-pixel depth fog. Only used on the !FAST_Z path where
-                // z genuinely varies per pixel; on the FAST_Z path this is
-                // hoisted to the triangle setup above. Compose with the
-                // existing alpha (material*objAlpha) by taking the
-                // minimum into a per-pixel local — important: must NOT
-                // mutate `alpha`, which is shared across all pixels of
-                // this triangle, or each pixel's fade would compound on
-                // the previous one's.
-                uint8_t pixAlpha = alpha;
-                if (z > depthFogNear && z < depthFogFar)
-                {
-                    uint8_t fogA = (uint8_t)(255 - ((z - depthFogNear) * 255) / (depthFogFar - depthFogNear));
-                    if (fogA < pixAlpha) pixAlpha = fogA;
-                }
-                else if (z >= depthFogFar)
-                {
-                    pixAlpha = 0;
-                }
-#else
-                uint8_t pixAlpha = alpha;
-#endif
-
-#if SCREEN_DOOR_ALPHA
-                // Stippling based on alpha value
-                if (!shouldDrawPixel(x, y, pixAlpha))
-                {
-                    continue;
-                }
-#endif
-
-#if Z_BUFFERING
-                if (!ignoreZBuffer && zb > zBuffer[zBufferIndex])
-                {
-                    continue;
-                }
-#endif
-
-#if TEXTURE_MAPPING
-                if (diffuseMap)
-                {
-                    if (diffuseMap->screenSpace)
+                    #if Z_BUFFERING
+                    // If the z-buffer position is at its maximum for this pixel (as close to the camera as is possible), skip this pixel
+                    // since it can't possibly be any closer.
+                    if (zBuffer[zBufferIndex] == 0 && !ignoreZBuffer)
                     {
-                        // **Screen-space texture mapping**
-                        uv.x = x * diffuseMap->width / screenWidth;
-                        uv.y = y * diffuseMap->height / screenHeight;
+                        continue;
                     }
-                    else if (diffuseMap->reflectionMap)
-                    {
-                        uv.x = x + z;
-                        uv.y = y + z;
-                    }
-                    else
-                    {
-#if PERSPECTIVE_CORRECT_TEXTURES
-                        // Interpolate 1/z, u/z, and v/z at the current pixel
-                        int32_t interpolatedOneOverZ = (oneOverZ1 * w0 + oneOverZ2 * w1 + oneOverZ3 * w2) / denom;
-                        int32_t interpolatedUOverZ = (uOverZ1 * w0 + uOverZ2 * w1 + uOverZ3 * w2) / denom;
-                        int32_t interpolatedVOverZ = (vOverZ1 * w0 + vOverZ2 * w1 + vOverZ3 * w2) / denom;
+                    #endif
 
-                        // Avoid division by zero
-                        if (interpolatedOneOverZ == 0)
-                            continue;
-
-                        // Compute final texture coordinates
-                        uv.x = (interpolatedUOverZ * FIXED_POINT_SCALE) / interpolatedOneOverZ;
-                        uv.y = (interpolatedVOverZ * FIXED_POINT_SCALE) / interpolatedOneOverZ;
-#else // Affine texture mapping
-                        uv.x = (v1.uv.x * w0 + v2.uv.x * w1 + v3.uv.x * w2) / denom;
-                        uv.y = (v1.uv.y * w0 + v2.uv.y * w1 + v3.uv.y * w2) / denom;
-#endif
-                    }
-
-                    // Sample color from material
-                    color = material->getColor(uv);
-
-                    // If the material diffuse map has a transparent color and that's what we got, skip drawing this pixel
-                    if (diffuseMap->hasAlpha && color == diffuseMap->alphaColor)
+                    // Inside test on the incrementally-stepped edge function.
+                    // Comparing int64 with 0 only examines the high word, so
+                    // this is cheap. The scanline range above already trimmed
+                    // the iteration to (mostly) inside-only pixels, but a
+                    // small shoulder can still be outside due to the integer
+                    // ceil/floor rounding - keep the test as a safety net.
+                    if ((ew0 | ew1 | ew2) < 0)
                     {
                         continue;
                     }
 
-                    // Distance-based texture LOD cross-fade. textureLodFade
-                    // is triangle-constant; outside the fade band it is
-                    // 255 (no work). Inside the band, swap or blend the
-                    // sampled texel toward material->color using whichever
-                    // composite method the build is configured for.
-                    if (textureLodFade < 255)
+    #if !HALF_WIDTH_BUFFERS
+                    // Checkerboard: skip pixels that belong to the other frame's pattern.
+                    // Using XOR parity: (x^y)&1 == (x+y)&1 (no carry in the lowest bit).
+                    if (checkerboardMode && (((x ^ y) & 1) != cbFrameParity))
                     {
-                    #if SCREEN_DOOR_ALPHA
-                        // Stipple between texel (drawn) and flat (drawn).
-                        // The same Bayer matrix as material alpha so the
-                        // two stipples don't beat against each other in
-                        // unpleasant ways.
-                        if (!shouldDrawPixel(x, y, textureLodFade))
-                            color = material->color;
-                    #else
-                        // dst = flat, src = texel. blendRGB565 returns
-                        // src*alpha + dst*(1-alpha), so alpha=textureLodFade
-                        // gives full texel at 255 and full flat at 0.
-                        color = blendRGB565(material->color, color, textureLodFade);
-                    #endif
+                        continue;
                     }
-                }
-#endif
+    #endif
 
-#if Z_BUFFERING
-                if (!noWriteZBuffer)
-                {
-                    zBuffer[zBufferIndex] = static_cast<uint16_t>(zb);
-                }
-#endif
+                    // For any inside pixel, |ew_i| <= |denom|. If any downstream
+                    // code needs int32 barycentric weights (interpolation paths)
+                    // they're safe to narrow here. The compiler DCEs these on
+                    // the FAST_Z / no-texture / no-lighting fast path.
+                    int32_t w0 = (int32_t)ew0;
+                    int32_t w1 = (int32_t)ew1;
+                    int32_t w2 = (int32_t)ew2;
 
-#if DEBUG_OVERDRAW
-                // Orange color in RGB565 format (0xFDA0)
-                color = 0xFDA0;
-                // Apply 25% blend
-                uint8_t r = ((color >> 11) & 0x1F) / 4;
-                uint8_t g = ((color >> 5) & 0x3F) / 4;
-                uint8_t b = (color & 0x1F) / 4;
-                
-                // Get existing color and blend
-                uint16_t existing = framebuffer[bufferIndex];
-                uint8_t existingR = (existing >> 11) & 0x1F;
-                uint8_t existingG = (existing >> 5) & 0x3F;
-                uint8_t existingB = existing & 0x1F;
-                
-                // Add the colors
-                r = std::min(static_cast<uint8_t>(31), static_cast<uint8_t>(existingR + r));
-                g = std::min(static_cast<uint8_t>(63), static_cast<uint8_t>(existingG + g));
-                b = std::min(static_cast<uint8_t>(31), static_cast<uint8_t>(existingB + b));
-                
-                color = (r << 11) | (g << 5) | b;
-                
-                #if HALF_WIDTH_BUFFERS
-                framebuffer[bufferIndex] = color;
-                #else
-                uint32_t combinedColor = (static_cast<uint32_t>(color) << 16) | color;
-                reinterpret_cast<uint32_t *>(framebuffer)[bufferIndex / 2] = combinedColor;
-                #endif                
-                continue;
-#else
-#if LIGHTING || Z_BRIGHTNESS
-                if (directionalLight)
-                {
-                    if (material->shadingMode == ShadingMode::GOURAUD)
+    // Pixel is inside the triangle - render it
+    // Interpolate z, u, v
+    #if !FAST_Z
+                    int32_t z = (v1.position.z * w0 + v2.position.z * w1 + v3.position.z * w2) / denom;
+
+                    if (z < nearPlane || z > farPlane)
                     {
-                        // Plane-equation incremental Gouraud brightness:
-                        // brightness_q16 was set at the row start and is
-                        // stepped by brightness_dx_step_q16 in the for-loop
-                        // header below. Mathematically equivalent to the
-                        // original (b0*w0 + b1*w1 + b2*w2)/denom but trades
-                        // a per-pixel divide + 3 multiplies for a single
-                        // int32 add per pixel.
-                        //
-                        // Clamp into the legitimate brightness band
-                        // [0, 255 + specular]. Without this cap any minor
-                        // overshoot from incremental rounding (or a near-
-                        // camera triangle where the q16 slope is large)
-                        // landed in the deep "blowout" range and the
-                        // per-pixel modulation pushed channels far past
-                        // full-white into wrap-around territory — the
-                        // bright random-colour flashes the user was seeing.
-                        int32_t b = brightness_q16 >> 16;
-                        const int32_t bMax = 255 + material->specular;
-                        if (b < 0) b = 0;
-                        if (b > bMax) b = bMax;
-                        brightness = (uint16_t)b;
+                        continue;
                     }
-                    else if (material->shadingMode == ShadingMode::PHONG)
+
+    #if Z_BUFFERING
+                    // Per-pixel Z bias in real depth units. Clamp to uint16
+                    // for storage (matches the FAST_Z setup path).
+                    int32_t zbRaw = z - zBias;
+                    if (zbRaw < 0)     zbRaw = 0;
+                    if (zbRaw > 65535) zbRaw = 65535;
+                    uint32_t zb = (uint32_t)zbRaw;
+    #endif
+
+    #if Z_BRIGHTNESS
+                    brightness = 255 - ((z - nearPlane) * 127) / (farPlane - nearPlane);
+                    brightness = std::min(brightness, static_cast<uint16_t>(255));
+    #endif
+    #endif
+
+    #if DEPTH_ALPHA_BLEND && !FAST_Z
+                    // Per-pixel depth fog. Only used on the !FAST_Z path where
+                    // z genuinely varies per pixel; on the FAST_Z path this is
+                    // hoisted to the triangle setup above. Compose with the
+                    // existing alpha (material*objAlpha) by taking the
+                    // minimum into a per-pixel local — important: must NOT
+                    // mutate `alpha`, which is shared across all pixels of
+                    // this triangle, or each pixel's fade would compound on
+                    // the previous one's.
+                    uint8_t pixAlpha = alpha;
+                    if (z > depthFogNear && z < depthFogFar)
                     {
-                        // Interpolate normals and shade per pixel. The shared
-                        // helper handles Lambert + view-facing specular and
-                        // the brightness cap; PHONG just pays the per-pixel
-                        // normal renormalisation cost on top of GOURAUD.
-                        Vector3 pixelNormal;
-#if PERSPECTIVE_CORRECT_TEXTURES
-                        // Perspective-correct normal interpolation: interpolate
-                        // n/z at each vertex then divide by the interpolated
-                        // 1/z — same reconstruction as UV perspective correction.
-                        // Avoids the affine "pinching" visible on oblique faces.
-                        int32_t pctOneOverZ = (oneOverZ1 * w0 + oneOverZ2 * w1 + oneOverZ3 * w2) / denom;
-                        if (pctOneOverZ != 0)
+                        uint8_t fogA = (uint8_t)(255 - ((z - depthFogNear) * 255) / (depthFogFar - depthFogNear));
+                        if (fogA < pixAlpha) pixAlpha = fogA;
+                    }
+                    else if (z >= depthFogFar)
+                    {
+                        pixAlpha = 0;
+                    }
+    #else
+                    uint8_t pixAlpha = alpha;
+    #endif
+
+    #if SCREEN_DOOR_ALPHA
+                    // Stippling based on alpha value
+                    if (!shouldDrawPixel(x, y, pixAlpha))
+                    {
+                        continue;
+                    }
+    #endif
+
+    #if Z_BUFFERING
+                    if (!ignoreZBuffer && zb > zBuffer[zBufferIndex])
+                    {
+                        continue;
+                    }
+    #endif
+
+    #if TEXTURE_MAPPING
+                    if (diffuseMap)
+                    {
+                        if (diffuseMap->screenSpace)
                         {
-                            int32_t nxOZ = (nxOverZ1 * w0 + nxOverZ2 * w1 + nxOverZ3 * w2) / denom;
-                            int32_t nyOZ = (nyOverZ1 * w0 + nyOverZ2 * w1 + nyOverZ3 * w2) / denom;
-                            int32_t nzOZ = (nzOverZ1 * w0 + nzOverZ2 * w1 + nzOverZ3 * w2) / denom;
-                            pixelNormal.x = (nxOZ * FIXED_POINT_SCALE) / pctOneOverZ;
-                            pixelNormal.y = (nyOZ * FIXED_POINT_SCALE) / pctOneOverZ;
-                            pixelNormal.z = (nzOZ * FIXED_POINT_SCALE) / pctOneOverZ;
+                            // **Screen-space texture mapping**
+                            uv.x = x * diffuseMap->width / screenWidth;
+                            uv.y = y * diffuseMap->height / screenHeight;
+                        }
+                        else if (diffuseMap->reflectionMap)
+                        {
+                            uv.x = x + z;
+                            uv.y = y + z;
                         }
                         else
                         {
-                            pixelNormal = { 0, 0, -(int32_t)FIXED_POINT_SCALE };
-                        }
-#else
-                        // Affine interpolation (no perspective correction).
-                        pixelNormal.x = (v1.normal.x * w0 + v2.normal.x * w1 + v3.normal.x * w2) / denom;
-                        pixelNormal.y = (v1.normal.y * w0 + v2.normal.y * w1 + v3.normal.y * w2) / denom;
-                        pixelNormal.z = (v1.normal.z * w0 + v2.normal.z * w1 + v3.normal.z * w2) / denom;
-#endif
+    #if PERSPECTIVE_CORRECT_TEXTURES
+                            // Interpolate 1/z, u/z, and v/z at the current pixel
+                            int32_t interpolatedOneOverZ = (oneOverZ1 * w0 + oneOverZ2 * w1 + oneOverZ3 * w2) / denom;
+                            int32_t interpolatedUOverZ = (uOverZ1 * w0 + uOverZ2 * w1 + uOverZ3 * w2) / denom;
+                            int32_t interpolatedVOverZ = (vOverZ1 * w0 + vOverZ2 * w1 + vOverZ3 * w2) / denom;
 
-                        auto normalLength = pixelNormal.length();
-                        if (normalLength > 0)
+                            // Avoid division by zero
+                            if (interpolatedOneOverZ == 0)
+                                continue;
+
+                            // Compute final texture coordinates
+                            uv.x = (interpolatedUOverZ * FIXED_POINT_SCALE) / interpolatedOneOverZ;
+                            uv.y = (interpolatedVOverZ * FIXED_POINT_SCALE) / interpolatedOneOverZ;
+    #else // Affine texture mapping
+                            uv.x = (v1.uv.x * w0 + v2.uv.x * w1 + v3.uv.x * w2) / denom;
+                            uv.y = (v1.uv.y * w0 + v2.uv.y * w1 + v3.uv.y * w2) / denom;
+    #endif
+                        }
+
+                        // Sample color from material
+                        color = material->getColor(uv);
+
+                        // If the material diffuse map has a transparent color and that's what we got, skip drawing this pixel
+                        if (diffuseMap->hasAlpha && color == diffuseMap->alphaColor)
                         {
-                            pixelNormal = (pixelNormal * static_cast<int32_t>(FIXED_POINT_SCALE)) / normalLength;
+                            continue;
                         }
 
-                        brightness = jetShadeBrightness(
-                            pixelNormal,
-                            directionalLight->lightDir,
-                            lightIntensity,
-                            material->diffuse,
-                            material->specular);
+                        // Distance-based texture LOD cross-fade. textureLodFade
+                        // is triangle-constant; outside the fade band it is
+                        // 255 (no work). Inside the band, swap or blend the
+                        // sampled texel toward material->color using whichever
+                        // composite method the build is configured for.
+                        if (textureLodFade < 255)
+                        {
+                        #if SCREEN_DOOR_ALPHA
+                            // Stipple between texel (drawn) and flat (drawn).
+                            // The same Bayer matrix as material alpha so the
+                            // two stipples don't beat against each other in
+                            // unpleasant ways.
+                            if (!shouldDrawPixel(x, y, textureLodFade))
+                                color = material->color;
+                        #else
+                            // dst = flat, src = texel. blendRGB565 returns
+                            // src*alpha + dst*(1-alpha), so alpha=textureLodFade
+                            // gives full texel at 255 and full flat at 0.
+                            color = blendRGB565(material->color, color, textureLodFade);
+                        #endif
+                        }
                     }
-                }
-#endif
+    #endif
 
-#if LIGHTING || Z_BRIGHTNESS
-                // If POSTFX_CELLSHADING is enabled, kill off the bottom N bits of the brightness value to create a cell shading effect
-                if (POSTFX_CELLSHADING)
+    #if Z_BUFFERING
+                    if (!noWriteZBuffer)
+                    {
+                        zBuffer[zBufferIndex] = static_cast<uint16_t>(zb);
+                    }
+    #endif
+
+    #if DEBUG_OVERDRAW
+                    // Orange color in RGB565 format (0xFDA0)
+                    color = 0xFDA0;
+                    // Apply 25% blend
+                    uint8_t r = ((color >> 11) & 0x1F) / 4;
+                    uint8_t g = ((color >> 5) & 0x3F) / 4;
+                    uint8_t b = (color & 0x1F) / 4;
+
+                    // Get existing color and blend
+                    uint16_t existing = framebuffer[bufferIndex];
+                    uint8_t existingR = (existing >> 11) & 0x1F;
+                    uint8_t existingG = (existing >> 5) & 0x3F;
+                    uint8_t existingB = existing & 0x1F;
+
+                    // Add the colors
+                    r = std::min(static_cast<uint8_t>(31), static_cast<uint8_t>(existingR + r));
+                    g = std::min(static_cast<uint8_t>(63), static_cast<uint8_t>(existingG + g));
+                    b = std::min(static_cast<uint8_t>(31), static_cast<uint8_t>(existingB + b));
+
+                    color = (r << 11) | (g << 5) | b;
+
+                    #if HALF_WIDTH_BUFFERS
+                    framebuffer[bufferIndex] = color;
+                    #else
+                    uint32_t combinedColor = (static_cast<uint32_t>(color) << 16) | color;
+                    reinterpret_cast<uint32_t *>(framebuffer)[bufferIndex / 2] = combinedColor;
+                    #endif
+                    continue;
+    #else
+    #if LIGHTING || Z_BRIGHTNESS
+                    if (directionalLight)
+                    {
+                        if (material->shadingMode == ShadingMode::GOURAUD)
+                        {
+                            // Plane-equation incremental Gouraud brightness:
+                            // brightness_q16 was set at the row start and is
+                            // stepped by brightness_dx_step_q16 in the for-loop
+                            // header below. Mathematically equivalent to the
+                            // original (b0*w0 + b1*w1 + b2*w2)/denom but trades
+                            // a per-pixel divide + 3 multiplies for a single
+                            // int32 add per pixel.
+                            //
+                            // Clamp into the legitimate brightness band
+                            // [0, 255 + specular]. Without this cap any minor
+                            // overshoot from incremental rounding (or a near-
+                            // camera triangle where the q16 slope is large)
+                            // landed in the deep "blowout" range and the
+                            // per-pixel modulation pushed channels far past
+                            // full-white into wrap-around territory — the
+                            // bright random-colour flashes the user was seeing.
+                            int32_t b = brightness_q16 >> 16;
+                            const int32_t bMax = 255 + material->specular;
+                            if (b < 0) b = 0;
+                            if (b > bMax) b = bMax;
+                            brightness = (uint16_t)b;
+                        }
+                        else if (material->shadingMode == ShadingMode::PHONG)
+                        {
+                            // Interpolate normals and shade per pixel. The shared
+                            // helper handles Lambert + view-facing specular and
+                            // the brightness cap; PHONG just pays the per-pixel
+                            // normal renormalisation cost on top of GOURAUD.
+                            Vector3 pixelNormal;
+    #if PERSPECTIVE_CORRECT_TEXTURES
+                            // Perspective-correct normal interpolation: interpolate
+                            // n/z at each vertex then divide by the interpolated
+                            // 1/z — same reconstruction as UV perspective correction.
+                            // Avoids the affine "pinching" visible on oblique faces.
+                            int32_t pctOneOverZ = (oneOverZ1 * w0 + oneOverZ2 * w1 + oneOverZ3 * w2) / denom;
+                            if (pctOneOverZ != 0)
+                            {
+                                int32_t nxOZ = (nxOverZ1 * w0 + nxOverZ2 * w1 + nxOverZ3 * w2) / denom;
+                                int32_t nyOZ = (nyOverZ1 * w0 + nyOverZ2 * w1 + nyOverZ3 * w2) / denom;
+                                int32_t nzOZ = (nzOverZ1 * w0 + nzOverZ2 * w1 + nzOverZ3 * w2) / denom;
+                                pixelNormal.x = (nxOZ * FIXED_POINT_SCALE) / pctOneOverZ;
+                                pixelNormal.y = (nyOZ * FIXED_POINT_SCALE) / pctOneOverZ;
+                                pixelNormal.z = (nzOZ * FIXED_POINT_SCALE) / pctOneOverZ;
+                            }
+                            else
+                            {
+                                pixelNormal = { 0, 0, -(int32_t)FIXED_POINT_SCALE };
+                            }
+    #else
+                            // Affine interpolation (no perspective correction).
+                            pixelNormal.x = (v1.normal.x * w0 + v2.normal.x * w1 + v3.normal.x * w2) / denom;
+                            pixelNormal.y = (v1.normal.y * w0 + v2.normal.y * w1 + v3.normal.y * w2) / denom;
+                            pixelNormal.z = (v1.normal.z * w0 + v2.normal.z * w1 + v3.normal.z * w2) / denom;
+    #endif
+
+                            auto normalLength = pixelNormal.length();
+                            if (normalLength > 0)
+                            {
+                                pixelNormal = (pixelNormal * static_cast<int32_t>(FIXED_POINT_SCALE)) / normalLength;
+                            }
+
+                            brightness = jetShadeBrightness(
+                                pixelNormal,
+                                directionalLight->lightDir,
+                                lightIntensity,
+                                material->diffuse,
+                                material->specular);
+                        }
+                    }
+    #endif
+
+    #if LIGHTING || Z_BRIGHTNESS
+                    // If POSTFX_CELLSHADING is enabled, kill off the bottom N bits of the brightness value to create a cell shading effect
+                    if (POSTFX_CELLSHADING)
+                    {
+                        brightness = brightness >> CELLSHADING_CELL_BITS << CELLSHADING_CELL_BITS;
+                    }
+
+                    // The triangle-setup hoist above already computed the lit
+                    // color for FLAT/unlit triangles without a diffuse texture
+                    // - skip the per-pixel modulation in that case. (Z_BRIGHTNESS
+                    // without LIGHTING never hoists, so guard the flag access
+                    // behind the same #if it was declared under.)
+    #if LIGHTING
+                    if (!emissive && !flatColorPrecomputed)
+    #else
+                    if (!emissive)
+    #endif
+                    {
+    #if LIGHTING
+                        // Per-pixel modulation. Two paths:
+                        //   1) Untextured (litPerPixelUntextured): base channels
+                        //      were extracted once at triangle setup; inline the
+                        //      add+saturate+multiply directly so the inner loop
+                        //      has no function call and no re-extract.
+                        //   2) Textured: `color` is the freshly-sampled texel,
+                        //      so we need the general per-channel helper.
+                        if (litPerPixelUntextured)
+                        {
+                            uint32_t tR = (uint32_t)brightness + ambR;
+                            uint32_t tG = (uint32_t)brightness + ambG;
+                            uint32_t tB = (uint32_t)brightness + ambB;
+                            if (tR > litMaxBrightness) tR = litMaxBrightness;
+                            if (tG > litMaxBrightness) tG = litMaxBrightness;
+                            if (tB > litMaxBrightness) tB = litMaxBrightness;
+
+                            uint32_t r, g, b;
+                            if (tR > 255) { uint32_t blow = tR - 255; r = litBaseR5 + ((31u - litBaseR5) * blow) / 256u; }
+                            else          { uint32_t v = litBaseR5 * tR; r = (v + 128u + (v >> 8)) >> 8; }
+                            if (tG > 255) { uint32_t blow = tG - 255; g = litBaseG6 + ((63u - litBaseG6) * blow) / 256u; }
+                            else          { uint32_t v = litBaseG6 * tG; g = (v + 128u + (v >> 8)) >> 8; }
+                            if (tB > 255) { uint32_t blow = tB - 255; b = litBaseB5 + ((31u - litBaseB5) * blow) / 256u; }
+                            else          { uint32_t v = litBaseB5 * tB; b = (v + 128u + (v >> 8)) >> 8; }
+                            color = (uint16_t)((r << 11) | (g << 5) | b);
+                        }
+                        else
+                        {
+                            const uint16_t maxBrightness = (uint16_t)(255u + material->specular);
+                            color = jetModulateRGB565(color, brightness, ambR, ambG, ambB, maxBrightness);
+                        }
+    #else
+                        // Z_BRIGHTNESS-only path: no ambient light, just a
+                        // scalar brightness applied to all three channels.
+                        if (brightness >= 255)
+                        {
+                            uint16_t blowout = brightness - 255;
+                            uint8_t r = ((color >> 11) & 0x1F);
+                            uint8_t g = ((color >> 5) & 0x3F);
+                            uint8_t b = (color & 0x1F);
+                            r = r + ((31 - r) * blowout) / 256;
+                            g = g + ((63 - g) * blowout) / 256;
+                            b = b + ((31 - b) * blowout) / 256;
+                            color = (r << 11) | (g << 5) | b;
+                        }
+                        else
+                        {
+                            const uint16_t br = ((color >> 11) & 0x1F) * brightness;
+                            const uint16_t bg = ((color >>  5) & 0x3F) * brightness;
+                            const uint16_t bb = ( color        & 0x1F) * brightness;
+                            const uint8_t r = (uint8_t)((br + 128 + (br >> 8)) >> 8);
+                            const uint8_t g = (uint8_t)((bg + 128 + (bg >> 8)) >> 8);
+                            const uint8_t b = (uint8_t)((bb + 128 + (bb >> 8)) >> 8);
+                            color = (r << 11) | (g << 5) | b;
+                        }
+    #endif
+                    }
+    #endif
+    #endif
+
+                // WATER_REFLECT on the general (LIGHTING=1) per-pixel path:
+                // sample the mirror row from the framebuffer.  The emissive
+                // flag above already bypassed all lighting modulation.
+                // When reflectBuffer is set, use it instead (prev-field SSR).
+                if (isWaterReflect)
                 {
-                    brightness = brightness >> CELLSHADING_CELL_BITS << CELLSHADING_CELL_BITS;
+                    const uint16_t* srcBuf = reflectBuffer ? reflectBuffer : framebuffer;
+                    uint16_t reflCol;
+                    if (waterSkyFallback && gradientColors != nullptr && gradientSize > 0) {
+                        reflCol = gradientColors[0];
+                    } else {
+    #if HALF_WIDTH_BUFFERS
+                        reflCol = srcBuf[waterMirrorBufBase + (x >> 1)];
+    #else
+                        reflCol = srcBuf[waterMirrorBufBase + x];
+    #endif
+                    }
+                    color = blendRGB565(material->color, reflCol, waterReflectAlpha);
+                    // SSR already composited the final pixel; bypass the
+                    // standard pixAlpha re-blend below or we get a double-blend
+                    // (50% of 50% = 25% reflection strength on desktop).
+                    pixAlpha = 255;
                 }
-
-                // The triangle-setup hoist above already computed the lit
-                // color for FLAT/unlit triangles without a diffuse texture
-                // - skip the per-pixel modulation in that case. (Z_BRIGHTNESS
-                // without LIGHTING never hoists, so guard the flag access
-                // behind the same #if it was declared under.)
-#if LIGHTING
-                if (!emissive && !flatColorPrecomputed)
-#else
-                if (!emissive)
-#endif
+                else if (isAdditive)
                 {
-#if LIGHTING
-                    // Per-pixel modulation. Two paths:
-                    //   1) Untextured (litPerPixelUntextured): base channels
-                    //      were extracted once at triangle setup; inline the
-                    //      add+saturate+multiply directly so the inner loop
-                    //      has no function call and no re-extract.
-                    //   2) Textured: `color` is the freshly-sampled texel,
-                    //      so we need the general per-channel helper.
-                    if (litPerPixelUntextured)
-                    {
-                        uint32_t tR = (uint32_t)brightness + ambR;
-                        uint32_t tG = (uint32_t)brightness + ambG;
-                        uint32_t tB = (uint32_t)brightness + ambB;
-                        if (tR > litMaxBrightness) tR = litMaxBrightness;
-                        if (tG > litMaxBrightness) tG = litMaxBrightness;
-                        if (tB > litMaxBrightness) tB = litMaxBrightness;
-
-                        uint32_t r, g, b;
-                        if (tR > 255) { uint32_t blow = tR - 255; r = litBaseR5 + ((31u - litBaseR5) * blow) / 256u; }
-                        else          { uint32_t v = litBaseR5 * tR; r = (v + 128u + (v >> 8)) >> 8; }
-                        if (tG > 255) { uint32_t blow = tG - 255; g = litBaseG6 + ((63u - litBaseG6) * blow) / 256u; }
-                        else          { uint32_t v = litBaseG6 * tG; g = (v + 128u + (v >> 8)) >> 8; }
-                        if (tB > 255) { uint32_t blow = tB - 255; b = litBaseB5 + ((31u - litBaseB5) * blow) / 256u; }
-                        else          { uint32_t v = litBaseB5 * tB; b = (v + 128u + (v >> 8)) >> 8; }
-                        color = (uint16_t)((r << 11) | (g << 5) | b);
-                    }
-                    else
-                    {
-                        const uint16_t maxBrightness = (uint16_t)(255u + material->specular);
-                        color = jetModulateRGB565(color, brightness, ambR, ambG, ambB, maxBrightness);
-                    }
-#else
-                    // Z_BRIGHTNESS-only path: no ambient light, just a
-                    // scalar brightness applied to all three channels.
-                    if (brightness >= 255)
-                    {
-                        uint16_t blowout = brightness - 255;
-                        uint8_t r = ((color >> 11) & 0x1F);
-                        uint8_t g = ((color >> 5) & 0x3F);
-                        uint8_t b = (color & 0x1F);
-                        r = r + ((31 - r) * blowout) / 256;
-                        g = g + ((63 - g) * blowout) / 256;
-                        b = b + ((31 - b) * blowout) / 256;
-                        color = (r << 11) | (g << 5) | b;
-                    }
-                    else
-                    {
-                        const uint16_t br = ((color >> 11) & 0x1F) * brightness;
-                        const uint16_t bg = ((color >>  5) & 0x3F) * brightness;
-                        const uint16_t bb = ( color        & 0x1F) * brightness;
-                        const uint8_t r = (uint8_t)((br + 128 + (br >> 8)) >> 8);
-                        const uint8_t g = (uint8_t)((bg + 128 + (bg >> 8)) >> 8);
-                        const uint8_t b = (uint8_t)((bb + 128 + (bb >> 8)) >> 8);
-                        color = (r << 11) | (g << 5) | b;
-                    }
-#endif
+                    // Pre-compute the saturating add into `color` so the
+                    // standard write path below emits it without a second blend.
+                    color    = addBlendRGB565(framebuffer[bufferIndex], color, pixAlpha);
+                    pixAlpha = 255;
                 }
-#endif
-#endif
 
-            // WATER_REFLECT on the general (LIGHTING=1) per-pixel path:
-            // sample the mirror row from the framebuffer.  The emissive
-            // flag above already bypassed all lighting modulation.
-            // When reflectBuffer is set, use it instead (prev-field SSR).
-            if (isWaterReflect)
-            {
-                const uint16_t* srcBuf = reflectBuffer ? reflectBuffer : framebuffer;
-                uint16_t reflCol;
-                if (waterSkyFallback && gradientColors != nullptr && gradientSize > 0) {
-                    reflCol = gradientColors[0];
-                } else {
-#if HALF_WIDTH_BUFFERS
-                    reflCol = srcBuf[waterMirrorBufBase + (x >> 1)];
-#else
-                    reflCol = srcBuf[waterMirrorBufBase + x];
-#endif
-                }
-                color = blendRGB565(material->color, reflCol, waterReflectAlpha);
-                // SSR already composited the final pixel; bypass the
-                // standard pixAlpha re-blend below or we get a double-blend
-                // (50% of 50% = 25% reflection strength on desktop).
-                pixAlpha = 255;
-            }
-            else if (isAdditive)
-            {
-                // Pre-compute the saturating add into `color` so the
-                // standard write path below emits it without a second blend.
-                color    = addBlendRGB565(framebuffer[bufferIndex], color, pixAlpha);
-                pixAlpha = 255;
-            }
-
-#if !DEBUG_OVERDRAW
-#if SCREEN_DOOR_ALPHA
-            // Stippling already accepted/rejected this pixel via
-            // shouldDrawPixel(); a straight write is correct here.
-            framebuffer[bufferIndex] = color;
-#else
-            // Traditional alpha blend: lerp toward `color` by pixAlpha.
-            // pixAlpha already folds in material*object alpha and any
-            // per-pixel depth-fog fade. Skip the blend math when the
-            // material is fully opaque — common case.
-            if (pixAlpha == 255) {
+    #if !DEBUG_OVERDRAW
+    #if SCREEN_DOOR_ALPHA
+                // Stippling already accepted/rejected this pixel via
+                // shouldDrawPixel(); a straight write is correct here.
                 framebuffer[bufferIndex] = color;
-            } else {
-                framebuffer[bufferIndex] = blendRGB565(framebuffer[bufferIndex], color, pixAlpha);
-            }
-#endif
-#endif
-#if RENDER_TILE_BUFFER
-                // Mark this tile as having been drawn to
-                int tileX = x / TILE_WIDTH;
-                int tileY = y / TILE_HEIGHT;
-                if (tileX >= 0 && tileX < (screenWidth + TILE_WIDTH - 1) / TILE_WIDTH &&
-                    tileY >= 0 && tileY < (screenHeight + TILE_HEIGHT - 1) / TILE_HEIGHT)
-                {
-                    //tileBuffer[tileY * ((screenWidth + TILE_WIDTH - 1) / TILE_WIDTH) + tileX] = 1;
+    #else
+                // Traditional alpha blend: lerp toward `color` by pixAlpha.
+                // pixAlpha already folds in material*object alpha and any
+                // per-pixel depth-fog fade. Skip the blend math when the
+                // material is fully opaque — common case.
+                if (pixAlpha == 255) {
+                    framebuffer[bufferIndex] = color;
+                } else {
+                    framebuffer[bufferIndex] = blendRGB565(framebuffer[bufferIndex], color, pixAlpha);
                 }
+    #endif
+    #endif
+    #if RENDER_TILE_BUFFER
+                    // Mark this tile as having been drawn to
+                    int tileX = x / TILE_WIDTH;
+                    int tileY = y / TILE_HEIGHT;
+                    if (tileX >= 0 && tileX < (screenWidth + TILE_WIDTH - 1) / TILE_WIDTH &&
+                        tileY >= 0 && tileY < (screenHeight + TILE_HEIGHT - 1) / TILE_HEIGHT)
+                    {
+                        //tileBuffer[tileY * ((screenWidth + TILE_WIDTH - 1) / TILE_WIDTH) + tileX] = 1;
+                    }
 
-#endif
+    #endif
+                }
+                }  // close general per-pixel path block
+    #endif // !JET_FAST_SIMPLE_SPANS || TEXTURE_MAPPING
+    #undef JET_LIT_STEP
             }
-            }  // close general per-pixel path block
-#endif // !JET_FAST_SIMPLE_SPANS || TEXTURE_MAPPING
-#undef JET_LIT_STEP
-        }
+        };
+        if (spans.valid) rasterRows(std::true_type{});
+        else rasterRows(std::false_type{});
 
         return true;
     }
