@@ -1329,16 +1329,18 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
         return v;
     };
 
-    // Clip edge from A (behind near plane) → B (in front). Returns vertex on
-    // the near plane with all attributes interpolated.
+    // Clip from an outside endpoint to an inside endpoint at either Z plane.
+    // Retain camera coordinates for triangles crossing both planes.
     auto clipEdge = [&](const RenderVertex& A, const RenderVertex& B,
-                        const Vector3& camA, const Vector3& camB) -> RenderVertex {
+                        const Vector3& camA, const Vector3& camB,
+                        int32_t planeZ, Vector3& clippedCam) -> RenderVertex {
         int32_t dz = camB.z - camA.z;
         if (dz == 0) dz = 1;
-        int32_t t = (int32_t)(((int64_t)(nz - camA.z) * FIXED_POINT_SCALE) / dz);
+        int32_t t = (int32_t)(((int64_t)(planeZ - camA.z) * FIXED_POINT_SCALE) / dz);
         Vector3 camNew(lerpI32(camA.x, camB.x, t),
                        lerpI32(camA.y, camB.y, t),
-                       nz);
+                       planeZ);
+        clippedCam = camNew;
 #if LIGHTING
         Vector3 n(lerpI32(A.normal.x, B.normal.x, t),
                   lerpI32(A.normal.y, B.normal.y, t),
@@ -1379,15 +1381,8 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
                        , int32_t srcTriIdx
 #endif
                        ) {
-        // Per-triangle near/far cull on the average camera-space Z.
-        // Object cull rejects entirely-outside boxes; this catches the
-        // remaining far-plane tris on objects that straddle it (large
-        // ground tiles, big cliff faces). We do this BEFORE the off-
-        // screen XY tests + shoelace + queue-push so a doomed tri pays
-        // none of those costs (and never enters the painter's-sort).
-        // depthFogFar == farPlane in the current build, so this also
-        // subsumes the depth-fog alpha=0 early-out that drawTriangle
-        // would have done after a full setup.
+        // Inputs have been clipped to the camera's Z range. Average depth is
+        // a sort/fog hint, not a visibility test for a straddling source face.
         const int32_t avgZ = (a.position.z + b.position.z + c.position.z) / 3;
         if (avgZ > camera->farPlane || avgZ < camera->nearPlane) return;
 
@@ -1476,6 +1471,10 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
                           | (vC.position.z < nz ? 4 : 0);
 
         if (outMask == 7) continue;               // fully behind near plane
+        const int farMask = (vA.position.z > camera->farPlane ? 1 : 0)
+                          | (vB.position.z > camera->farPlane ? 2 : 0)
+                          | (vC.position.z > camera->farPlane ? 4 : 0);
+        if (farMask == 7) continue;               // fully beyond far plane
 
 #if TEXTURE_MAPPING
         #define JET_UV_ARGS(A, B, C) , (A), (B), (C)
@@ -1489,7 +1488,7 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
         #define JET_EMIT_TRI(A, B, C, M, U, V, W)  emitTri((A), (B), (C), (M) JET_UV_ARGS(U, V, W))
 #endif
 
-        if (outMask == 0) {                       // fast path: fully in front
+        if (outMask == 0 && farMask == 0) {       // fast path: fully inside
             Material* effectiveMat = triangle.material;
             if (triangle.colorBaked) {
                 s_bakedMat.color = triangle.bakedColor;
@@ -1502,8 +1501,8 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
             continue;
         }
 
-        // Straddling near plane — produce a clipped polygon (3 or 4 verts)
-        // while preserving winding order of the original triangle.
+        // Clip straddlers while preserving winding. A triangle crossing both
+        // parallel Z planes can become a pentagon (three output triangles).
         const Vector3 cA = cameraPosition(meshSource->vertices[triangle.v1].position);
         const Vector3 cB = cameraPosition(meshSource->vertices[triangle.v2].position);
         const Vector3 cC = cameraPosition(meshSource->vertices[triangle.v3].position);
@@ -1521,26 +1520,48 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
                              (outMask & 2) == 0,
                              (outMask & 4) == 0 };
 
-        RenderVertex poly[4];
+        RenderVertex poly[6];
+        Vector3 polyCam[6];
         int polyN = 0;
         for (int i = 0; i < 3; ++i) {
             const int j = (i + 1) % 3;
-            if (in[i]) poly[polyN++] = *vs[i];
+            if (in[i]) {
+                polyCam[polyN] = *cvs[i];
+                poly[polyN++] = *vs[i];
+            }
             if (in[i] != in[j]) {
                 // One endpoint in, one out — add the near-plane intersection.
                 if (in[i])
-                    poly[polyN++] = clipEdge(*vs[j], *vs[i], *cvs[j], *cvs[i]);
+                    poly[polyN] = clipEdge(*vs[j], *vs[i], *cvs[j], *cvs[i], nz, polyCam[polyN]);
                 else
-                    poly[polyN++] = clipEdge(*vs[i], *vs[j], *cvs[i], *cvs[j]);
+                    poly[polyN] = clipEdge(*vs[i], *vs[j], *cvs[i], *cvs[j], nz, polyCam[polyN]);
+                ++polyN;
             }
         }
 
-        if (polyN >= 3) {
-            Material* effectiveMat = triangle.material;
-            if (triangle.colorBaked) { s_bakedMat.color = triangle.bakedColor; effectiveMat = &s_bakedMat; }
-            JET_EMIT_TRI(poly[0], poly[1], poly[2], effectiveMat, &poly[0].uv, &poly[1].uv, &poly[2].uv);
+        if (farMask) {
+            RenderVertex farPoly[6];
+            int farN = 0;
+            for (int i = 0; i < polyN; ++i) {
+                const int j = (i + 1) % polyN;
+                const bool insideI = polyCam[i].z <= camera->farPlane;
+                const bool insideJ = polyCam[j].z <= camera->farPlane;
+                if (insideI) farPoly[farN++] = poly[i];
+                if (insideI != insideJ) {
+                    Vector3 intersection;
+                    farPoly[farN++] = insideI
+                        ? clipEdge(poly[j], poly[i], polyCam[j], polyCam[i], camera->farPlane, intersection)
+                        : clipEdge(poly[i], poly[j], polyCam[i], polyCam[j], camera->farPlane, intersection);
+                }
+            }
+            polyN = farN;
+            for (int i = 0; i < polyN; ++i) poly[i] = farPoly[i];
         }
-        if (polyN == 4) JET_EMIT_TRI(poly[0], poly[2], poly[3], triangle.colorBaked ? &s_bakedMat : triangle.material, &poly[0].uv, &poly[2].uv, &poly[3].uv);
+        Material* effectiveMat = triangle.material;
+        if (triangle.colorBaked) { s_bakedMat.color = triangle.bakedColor; effectiveMat = &s_bakedMat; }
+        for (int i = 1; i + 1 < polyN; ++i) {
+            JET_EMIT_TRI(poly[0], poly[i], poly[i+1], effectiveMat, &poly[0].uv, &poly[i].uv, &poly[i+1].uv);
+        }
         #undef JET_EMIT_TRI
         #undef JET_UV_ARGS
     }

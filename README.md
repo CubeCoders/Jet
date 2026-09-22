@@ -4,130 +4,108 @@
 
 # Jet
 
-**Jet** is a tiny, dependency-free, fixed-function 3D rasteriser written in
-modern C++17. It is designed to run on low-performance embedded hardware with limited memory such as the ESP32, STM32 and similar embedded MCUs, yet it is portable enough to run on a desktop PC, Raspberry Pi, or anything else.
+**Jet** is a dependency-free, fixed-function 3D software rasteriser written in
+C++17. It targets embedded hardware with limited CPU and memory, including
+ESP32 and STM32, and also runs on desktop PCs and Raspberry Pi.
 
-Jet runs entirely in software using fast, integer-only arithmetic. It exclusively uses 16-bit RGB565 color natively for fast output to 565 displays such as the ST7796, ILI9488 and other similar SPI displays.
+Jet uses integer arithmetic in the rasterisation hot path and native 16-bit
+RGB565 colour for output to embedded displays. It supports flat-shaded, lit
+and textured geometry for low-poly games and visualisations.
 
-On an ESP32 S3, it is capable of rendering approxiamtely 40000 triangles/second (flat shaded), or a little over 650 on-screen triangles (after culling) at 60fps at 480x320, or 1300 at 30fps which puts it somewhere between the Sega 32X and Sega Saturn in terms of performance at that resolution.
+On an ESP32-S3, Jet reaches a peak throughput of **70,000 triangles/second**
+(flat-shaded). The demo below runs at a 480×320 output resolution and 60 FPS
+using half-width, interlaced field buffers. Throughput varies with scene
+complexity, triangle size and enabled rendering features.
 
-## Join us on Discord!
+## Community
 
-Show off your projects, chat with other users or ask for help and advice using Jet on the official [Discord server](https://discord.gg/FSdJYDTEYt)!
+Share projects and get help on the [Discord server](https://discord.gg/FSdJYDTEYt).
 
 ## Demo
 
-A demonstration of a Wipeout-style game built on Jet, running on an
-**ESP32-S3 at 60 FPS** (interlaced field-buffer mode, software-rendered, no
-GPU):
+A Wipeout-style game running on an **ESP32-S3 at 60 FPS**:
 
-[![Jet on ESP32-S3 — 60 FPS Wipeout-style demo](https://img.youtube.com/vi/aKkb5L-YTTc/hqdefault.jpg)](https://www.youtube.com/watch?v=aKkb5L-YTTc "Jet on ESP32-S3 — 60 FPS Wipeout-style demo")
-
-## What is it good at?
-
-Jet is opinionated. Its sweet spot is:
-
-- **Stylised / retro 3D** - flat-shaded, gouraud-shaded or affine-textured
-  geometry, RGB565 framebuffers, the look of late-90s console / arcade 3D.
-- **Hard real-time, fixed budget** - every feature is a compile-time switch in
-  `JetConfig.hpp`, so you only pay (in flash, RAM and CPU) for what you actually
-  use. Disable Z-buffering, perspective-correct texturing or per-pixel
-  lighting and the code for them simply isn't compiled in.
-- **Tiny memory footprints** - fixed-point math throughout the hot path, an
-  optional half-width framebuffer mode, optional interlaced field-buffer mode
-  for 60 Hz on parts that can't sustain a full progressive frame, and an
-  optional checkerboard reconstruction mode for desktop.
-- **Predictable behaviour** - no allocations on the hot path, no virtual
-  dispatch in the rasteriser, no hidden globals. The same scene renders the
-  same way on every platform.
-
-If you want PBR, real-time global illumination, mesh shaders or 4K then this is not the engine for you. If you want to put a smooth, lit, textured 3D scene
-on a 320×240 LCD attached to a microcontroller, or to render a low-poly
-software-rasterised aesthetic at silly framerates on a desktop, Jet is built
-for exactly that.
+[![Jet on ESP32-S3: 60 FPS Wipeout-style demo](https://img.youtube.com/vi/aKkb5L-YTTc/hqdefault.jpg)](https://www.youtube.com/watch?v=aKkb5L-YTTc "Jet on ESP32-S3: 60 FPS Wipeout-style demo")
 
 ## Feature highlights
 
-Most of these are individually toggleable via `JetConfig.hpp` (see
-[`src/JetConfig.example.hpp`](src/JetConfig.example.hpp) for the full list and
-documentation):
+Compile-time switches in `JetConfig.hpp` let you disable features to reduce
+CPU, RAM and flash usage. See [`src/JetConfig.example.hpp`](src/JetConfig.example.hpp)
+for the available options.
 
 ### Rendering
+
 - Triangle and quad meshes with per-face material assignment.
 - Flat, Gouraud, Phong and wireframe shading modes (per material).
 - Affine and perspective-correct texture mapping; optional bilinear filtering.
-- RGB565 colour throughout (16-bit framebuffer, native to most embedded
-  displays).
 - Optional Z-buffering, or painter's-algorithm sorting (per-object and/or
-  per-triangle) when memory is tighter than CPU.
-- Backface / frontface culling, depth bias for decals/shadows, per-object
+  per-triangle).
+- Backface and frontface culling, depth bias for decals and shadows, per-object
   blend modes (replace, add, subtract, multiply, average, XOR).
-- Screen-door alpha and noise-based dithering for cheap transparency.
-- Per-object distance-based fade in / fade out (LOD pop reduction) and
+- Screen-door alpha and noise-based dithering for transparency.
+- Per-object distance-based fading to reduce LOD popping and
   scene-wide depth fog.
-- Interlaced or Checkerboard rendering (with optional reconstruction)
-- **`WATER_REFLECT` shading mode** — animated screen-space water surface.
+- Half-width framebuffers, interlaced field buffers and checkerboard rendering
+  with optional reconstruction.
+- **`WATER_REFLECT` shading mode**: animated screen-space water surface.
   Reflects the background sky gradient about a camera-pitch-correct waterline,
   with per-material ripple amplitude (`specular`) and vertical bias
   (`waterYBias`). Blended toward a flat tint by `material->alpha`.
-- **`ADDITIVE` shading mode** — saturating-add blend (src × alpha + dst).
-  Fully emissive; intended for neon signs, lamp coronas, explosion halos,
-  and faked dynamic lights.
-- **`SSR_FIELD_REFLECT`** — when `FIELD_BUFFERS` is active, `WATER_REFLECT`
+- **`ADDITIVE` shading mode**: saturating-add blend (src × alpha + dst)
+  for emissive effects such as neon signs and explosion halos.
+- **`SSR_FIELD_REFLECT`**: when `FIELD_BUFFERS` is active, `WATER_REFLECT`
   samples mirror pixels from the *previous* committed field buffer so
-  reflections are never depth-order dependent and never show render-order
-  artefacts across parallel rendering bands.
-- Perspective-correct Phong normal interpolation (complements the existing
-  perspective-correct UV path).
+  reflections avoid draw-order dependencies across parallel rendering bands.
+- Perspective-correct Phong normal interpolation.
 
 ### Lighting
-- Ambient + directional lights with FLAT / GOURAUD / PHONG shading.
-- Optional `Z_BRIGHTNESS` cheap depth darkening for engines without a real
-  light rig.
+
+- Ambient and directional lights with Flat, Gouraud or Phong shading.
+- Optional `Z_BRIGHTNESS` depth darkening.
 
 ### Post-FX
-- "Free" effects (no extra buffer): CRT scanlines, cell-shading.
+
+- Effects without an extra buffer: CRT scanlines, cell-shading.
 - Buffered effects (large-RAM targets): FXAA, bloom, motion blur,
   chromatic aberration, pixelation.
 
 ### Tooling
-- `Primitives::create*` helpers for cube / sphere / cylinder / capsule /
-  pyramid / grid / plane / quad / billboard.
+
+- `Primitives::create*` helpers for cubes, spheres, cylinders, capsules,
+  pyramids, grids, planes, quads and billboards.
 - Minimal Wavefront `.obj` loader.
 - Optional screen-space picking (compile-time bounded; zero cost when set to
   0). Returns the closest hit object, triangle index, depth and snapped pixel
   coordinate.
-- Animated palette textures — `Texture::advancePalette(dt, fps)` cycles the
+- Animated palette textures: `Texture::advancePalette(dt, fps)` cycles the
   palette offset by `dt × fps` entries per call; no-op when `paletteSize` is 0.
-- A small custom shader entry point if you need to step outside the
-  fixed-function path.
+- Custom shader entry point for extending the fixed-function pipeline.
 
 ### 2D Sprites
-- `Sprite2D` — a lightweight composited 2D sprite drawn over the scene after
-  `render()`. Supports textured or solid-colour fills, colour-key transparency,
-  optional alpha blend, additive blend, integer upscaling, and `zOrder`-based
-  draw order. On `HALF_WIDTH_BUFFERS` builds sprites are composited at full
-  output resolution during display scanout.
+
+`Sprite2D` draws overlays after `render()`. It supports textured or solid-colour
+fills, colour-key transparency, alpha and additive blending, integer upscaling,
+and `zOrder`-based draw order. On `HALF_WIDTH_BUFFERS` builds, sprites are
+composited at full output resolution during display scanout.
 
 ### Particles
-- `ParticleSystem` — a fixed-pool (no-heap) particle system rendered directly
-  through the rasteriser after `scene->render()`. Ships with a spark emitter
-  (impact sparks with white → blue lifecycle) and a water-splash emitter
-  (short-lived foam-to-blue spray). Distance LOD culls particles that are too
-  far from the camera; emitter count and lifetime are tunable.
+
+`ParticleSystem` uses a fixed pool and renders through the rasteriser after
+`scene->render()`. It includes spark and water-splash emitters, distance
+culling, and configurable emitter counts and particle lifetimes.
 
 ### Lens flare
-- `LensFlare` — an n-element sprite chain that projects a directional light
-  source to screen space, optionally queries a pick slot for sun occlusion
-  testing, and repositions flare elements along the sun → screen-centre axis
-  each frame. Fade speed, per-element axis offset (`axisT`), base alpha, blend
-  mode and integer scale are all configurable. Works without picking
-  (`MAX_PICK_QUERIES = 0`), in which case the sun is treated as unobstructed.
+
+`LensFlare` projects a directional light source to screen space and positions
+a sprite chain along the axis between the sun and screen centre. Fade speed,
+per-element axis offset (`axisT`), alpha, blend mode and integer scale are
+configurable. It can use a pick slot for sun occlusion testing; with
+`MAX_PICK_QUERIES = 0`, the sun is treated as unobstructed.
 
 ## Getting started
 
-Jet is a library — it owns no window, display driver, or main loop.
-Add it as a CMake subdirectory or ESP-IDF component, provide a
+Your application provides the framebuffer, display driver and main loop.
+Add Jet as a CMake subdirectory or ESP-IDF component, provide a
 `JetConfig.hpp` on your include path (copy and customise
 `src/JetConfig.example.hpp`), then call `scene->render()` once per frame.
 
@@ -139,14 +117,10 @@ dependencies:
   jet: "*"
 ```
 
-…and provide a `JetConfig.hpp` next to your application.
-
 ### Minimal example
 
-Jet itself owns no window, no display driver and no main loop - it just
-fills a framebuffer you give it. The host code below is the smallest
-useful program: allocate a colour and depth buffer, build a scene with a
-camera, a light and a cube, then call `scene->render()` once per frame.
+Allocate colour and depth buffers, add a camera, lights and a cube, then
+render each frame:
 
 ```cpp
 #include "Jet.hpp"
@@ -190,20 +164,10 @@ int main() {
 }
 ```
 
-There is no Jet-side `main()`, no platform glue, no event pump. Whatever
-talks to your display (SPI, parallel RGB, DMA, SDL streaming texture,
-fbdev, …) is yours to provide; Jet stops at the framebuffer.
-
 ## Documentation
 
-Full API reference is generated from the inline Doxygen comments in
-[`src/`](src) and is published via GitHub Pages at:
-
-> **<https://cubecoders.github.io/Jet/>**
-
-<!-- (GitHub Pages serves project sites at `https://<owner>.github.io/<repo>/`,
-so the URL above is the canonical location for any commit on the
-default branch once Pages is enabled in the repository settings.) -->
+The [API reference](https://cubecoders.github.io/Jet/) is generated from the
+Doxygen comments in [`src/`](src).
 
 To build the docs locally (requires `doxygen` and optionally `graphviz`):
 
@@ -213,59 +177,25 @@ doxygen Doxyfile
 # output: components/Jet/src/docs/html/index.html
 ```
 
-The repository is configured to publish the same Doxygen output to
-GitHub Pages automatically on every push to the default branch - the
-hosted version at the link above always matches the latest committed
-sources.
+GitHub Actions publishes the documentation on pushes to the default branch.
 
 ## Licensing
 
-Jet is dual-licensed.
+Jet is distributed under the **MIT License**. The full text is in
+[`LICENSE`](LICENSE).
 
-### 1. Open-source: AGPL-3.0-or-later
-
-Jet is distributed under the **GNU Affero General Public License version 3,
-or (at your option) any later version**. The full text is in [`LICENSE`](LICENSE).
-
-You are free to use, study, modify and redistribute Jet under the terms of
-the AGPL. **In short: anyone you distribute a binary to (including users who
-interact with it over a network) is entitled to the complete corresponding
-source code of the application that links against Jet, under the AGPL.** This
-is a feature, not a bug. It is what keeps Jet (and improvements to Jet) free
-for everyone.
-
-If you're hobbyist, an academic, an open-source project, or a company that
-ships your source code anyway, you almost certainly want this licence and you
-do not need to talk to us.
-
-### 2. Commercial licence
-
-If you want to ship a closed-source product that links against Jet - i.e. you
-**cannot or do not wish to release the source of your application under the
-AGPL** - a commercial licence is available from CubeCoders. The commercial
-licence removes the AGPL's source-disclosure requirement for your product
-while leaving the upstream Jet codebase itself unaffected.
-
-> **Commercial licensing:** <https://cubecoders.com/jet>
-
-We deliberately keep the open-source licence strong (AGPL, not LGPL or MIT)
-precisely so that the commercial licence is meaningful. Revenue from
-commercial licences is what funds continued development of the open-source
-version; if you benefit commercially from Jet without releasing your source,
-please buy a licence. It is the single most direct way to support the
-project.
+You can use, modify and distribute Jet in open-source or closed-source
+projects, including commercial products, without a separate licence or fee.
+Include the copyright and permission notices as required by the MIT License.
 
 ## Contributing
 
-Contributions are welcome - bug reports, fixes, new platforms, new examples,
-documentation improvements, all of it. Please open an issue or pull request
-on the official repository.
+Submit bug reports, fixes, examples and documentation improvements through
+issues or pull requests on the official repository.
 
 Before your first contribution, please read [CONTRIBUTING.md](CONTRIBUTING.md).
-Because Jet is dual-licensed (AGPL + commercial), every contributor must
-agree to the Contributor Licence Agreement (CLA) documented there, which
-explicitly authorises CubeCoders to relicense contributions under the
-commercial Jet licence as well as the upstream AGPL version.
+Contributions are accepted under the MIT License; no separate Contributor
+Licence Agreement is required.
 
 ---
 

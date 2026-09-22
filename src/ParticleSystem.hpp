@@ -125,7 +125,7 @@ public:
                          const Vec3f& sideDir, const Vec3f& upDir,
                          float speed, int count,
                          const Vec3f& baseVel = Vec3f{0.0f, 0.0f, 0.0f}) {
-        const float baseSpeed = 70.0f * worldScale + speed * 0.10f;
+        const float baseSpeed = 100.0f * worldScale + speed * 0.12f;
         for (int n = 0; n < count; ++n) {
             Particle* p = allocate();
             if (!p) break;
@@ -133,9 +133,9 @@ public:
             float rx = randF() - 0.5f;
             float rz = randF() - 0.5f;
             Vec3f dir {
-                travelDir.x * 1.15f + sideDir.x * 0.28f + upDir.x * 0.35f + rx * 0.20f,
-                travelDir.y * 1.15f + sideDir.y * 0.28f + upDir.y * 0.35f + fabsf(randF()) * 0.25f,
-                travelDir.z * 1.15f + sideDir.z * 0.28f + upDir.z * 0.35f + rz * 0.20f
+                travelDir.x * 0.90f + sideDir.x * 0.55f + upDir.x * 0.60f + rx * 0.25f,
+                travelDir.y * 0.90f + sideDir.y * 0.55f + upDir.y * 0.60f + fabsf(randF()) * 0.30f,
+                travelDir.z * 0.90f + sideDir.z * 0.55f + upDir.z * 0.60f + rz * 0.25f
             };
             float dlen = dir.length();
             if (dlen < 1e-4f) dlen = 1.0f;
@@ -302,7 +302,8 @@ public:
 
             // Project velocity tip (for streak orientation)
             const float vlen = sqrtf(p.vel.x * p.vel.x + p.vel.y * p.vel.y + p.vel.z * p.vel.z);
-            const float streakLen = (vlen > 1.0f) ? (vlen * 0.02f) : (2.0f * worldScale);
+            const float streakTime = p.kind == ParticleKind::Splash ? 0.03f : 0.02f;
+            const float streakLen = (vlen > 1.0f) ? (vlen * streakTime) : (2.0f * worldScale);
 
             float vnx = 0.0f, vny = 0.0f, vnz = 0.0f;
             if (vlen > 1e-3f) {
@@ -330,7 +331,7 @@ public:
             const int32_t ddy = ty - by;
             const float slen = sqrtf((float)(ddx * ddx + ddy * ddy));
 
-            const int32_t HW = 2;
+            const int32_t HW = p.kind == ParticleKind::Splash ? 3 : 2;
             int32_t perpX, perpY;
             if (slen < 0.5f) {
                 perpX = HW; perpY = 0;

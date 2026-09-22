@@ -147,3 +147,11 @@ Define `JET_TEST_POSITION_CACHE=1` when compiling `scene_texture_queue.cpp`
 to exercise cached/uncached positions and LODs, cache rebuilding after direct
 edits, Object copies and invalidation by geometry-changing helpers. Its
 fingerprint must still match the uncached baseline in every configuration.
+
+## Far-plane clipping
+
+`far_plane_clipping.cpp` checks that large ground/water faces retain their
+visible area when their average depth is beyond the far plane. It covers
+crossings of both Z planes, reversed winding and fully distant geometry.
+Build it with the same Scene sources as `scene_texture_queue.cpp`, with
+`HALF_WIDTH_BUFFERS=0` and `FIELD_BUFFERS=0`, and keep assertions enabled.
