@@ -735,6 +735,12 @@ namespace Renderer
 
 #if LIGHTING || Z_BRIGHTNESS
         uint16_t brightness = 0;
+    #if POSTFX_CELLSHADING
+        // Hoist runtime selection out of the pixel loop. Band workers copy
+        // these controls along with the rest of their rasterizer state.
+        const unsigned celBits = celShadingEnabled ? std::min(unsigned(celShadingBits), 8u) : 0u;
+        const uint16_t celMask = uint16_t(0xffffu << celBits);
+    #endif
 #endif
 
 #if LIGHTING
@@ -834,6 +840,9 @@ namespace Renderer
         if (flatShaded && !emissive && !diffuseMapSamples)
         {
             const uint16_t maxBrightness = (uint16_t)(255u + material->specular);
+    #if POSTFX_CELLSHADING
+            brightness &= celMask;
+    #endif
             color = jetModulateRGB565(color, brightness, ambR, ambG, ambB, maxBrightness);
             flatColorPrecomputed = true;
         }
@@ -1915,11 +1924,9 @@ namespace Renderer
     #endif
 
     #if LIGHTING || Z_BRIGHTNESS
-                    // If POSTFX_CELLSHADING is enabled, kill off the bottom N bits of the brightness value to create a cell shading effect
-                    if (POSTFX_CELLSHADING)
-                    {
-                        brightness = brightness >> CELLSHADING_CELL_BITS << CELLSHADING_CELL_BITS;
-                    }
+    #if POSTFX_CELLSHADING
+                    brightness &= celMask;
+    #endif
 
                     // The triangle-setup hoist above already computed the lit
                     // color for FLAT/unlit triangles without a diffuse texture

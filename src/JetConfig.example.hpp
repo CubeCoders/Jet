@@ -190,7 +190,7 @@
 #define MOTION_BLUR_STRENGTH   50   // Motion blur mix weight (0-100)
 #define CHROMATIC_OFFSET        2   // Pixel offset for R/B channel split
 #define PIXELATE_SIZE           4   // Mosaic block size in pixels
-#define CELLSHADING_CELL_BITS   4   // Lighting precision bits (0 = full, 8 = 256 bands)
+#define CELLSHADING_CELL_BITS   4   // Low lighting bits discarded (0 = smooth, 6 = four diffuse bands, 8 = steps of 256)
 
 // ---------------------------------------------------------------------------
 // Debug

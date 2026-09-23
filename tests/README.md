@@ -237,3 +237,20 @@ subtracting raw 5/6-bit channel values. This corrects the documented 0-255
 intensity range and avoids a green cast. Existing CRT-enabled applications may
 need to retune their intensity. `Scene::crtEnabled` and `crtIntensity` are present
 when `POSTFX_CRT=1`; disabled builds preserve their previous rendering path.
+
+
+## Runtime cel lighting
+
+`cel_quantization.cpp` uses the real rasterizer to check exact diffuse-light bands
+for flat and constant Gouraud shading, runtime disabling, bit-count clamping,
+constant-normal Phong and unlit bypass. Build against Jet with the cel teapot's
+configuration (`LIGHTING=1`, `POSTFX_CELLSHADING=1`, `TEXTURE_MAPPING=0`,
+`HALF_WIDTH_BUFFERS=1`, `FIELD_BUFFERS=1`, depth enabled). The examples repository's
+`esp32-postfx-cel/tests` runs it alongside a 28-pose integration test.
+
+The runtime `celShadingEnabled` and `celShadingBits` controls exist when
+`POSTFX_CELLSHADING=1`. Bits are discarded, not retained: six bits means steps of
+64. The mask is computed once per triangle and copied with raster-worker state.
+Quantisation now also applies before the flat-colour modulation hoist; previously
+untextured flat shading bypassed it. Ambient and additive Phong gloss remain
+unquantised, and compile-time disabled builds retain the original path.
