@@ -27,9 +27,20 @@ public:
     /// @param framebuffer RGB565 framebuffer of size screenWidth*screenHeight.
     void applyBloom(uint16_t* framebuffer);
 
-    /// @brief Apply a CRT scanline darkening effect in place.
-    /// @param framebuffer RGB565 framebuffer of size screenWidth*screenHeight.
+    /// @brief Apply CRT with the configured intensity and buffer layout.
+    /// Full-height buffers process all odd rows. Packed fields default to the
+    /// even physical field (unchanged); use the overload to select odd rows.
+    /// @param framebuffer RGB565 colour storage for the configured layout.
     void applyCRT(uint16_t* framebuffer);
+
+    /// @brief Darken odd physical display rows in place, with no scratch buffer.
+    /// Honours HALF_WIDTH_BUFFERS and FIELD_BUFFERS. Packed fields always
+    /// contain alternate physical rows; oddRows selects their display parity.
+    /// With full-height buffers, interlaced=true touches only the selected
+    /// parity, preventing repeated darkening of retained rows.
+    /// intensity is 0 (unchanged) to 255 (black), scaling RGB equally.
+    void applyCRT(uint16_t* framebuffer, uint8_t intensity,
+                  bool interlaced, bool oddRows);
 
     /// @brief Blend the current frame with the previous frame to produce motion blur.
     /// @param framebuffer RGB565 framebuffer of size screenWidth*screenHeight.

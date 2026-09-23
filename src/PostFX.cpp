@@ -297,22 +297,29 @@ void PostFX::applyBloom(uint16_t* framebuffer) {
 
 void PostFX::applyCRT(uint16_t* framebuffer) {
     #if POSTFX_CRT
-    for (int y = 0; y < screenHeight; y++) {
-        // Create scanline effect
-        uint8_t scanline = (y & 1) ? CRT_SCANLINE_INTENSITY : 0;
-        
-        for (int x = 0; x < screenWidth; x++) {
-            uint16_t& pixel = framebuffer[y * screenWidth + x];
-            int r = ((pixel >> 11) & 0x1F);
-            int g = ((pixel >> 5) & 0x3F);
-            int b = (pixel & 0x1F);
-            
-            // Darken alternate lines and add slight color tinting
-            r = std::max(0, r - scanline);
-            g = std::max(0, g - scanline);
-            b = std::max(0, b - scanline);
-            
-            pixel = (r << 11) | (g << 5) | b;
+    applyCRT(framebuffer, CRT_SCANLINE_INTENSITY, FIELD_BUFFERS != 0, false);
+    #endif
+}
+
+void PostFX::applyCRT(uint16_t* framebuffer, uint8_t intensity,
+                      bool interlaced, bool oddRows) {
+    #if POSTFX_CRT
+    if (!framebuffer || intensity == 0) return;
+    const int width = HALF_WIDTH_BUFFERS ? screenWidth / 2 : screenWidth;
+    const bool alternating = FIELD_BUFFERS || interlaced;
+    // Work in physical display coordinates. Applying stripes to packed row
+    // indices instead would make pairs of dark lines and shift with the field.
+    if (alternating && !oddRows) return;
+    const unsigned gain = 255u - intensity;
+    for (int y = 1; y < screenHeight; y += 2) {
+        const int storedY = FIELD_BUFFERS ? y / 2 : y;
+        uint16_t* row = framebuffer + storedY * width;
+        for (int x = 0; x < width; ++x) {
+            const unsigned pixel = row[x];
+            const unsigned r = (((pixel >> 11) & 31) * gain + 127) / 255;
+            const unsigned g = (((pixel >> 5) & 63) * gain + 127) / 255;
+            const unsigned b = ((pixel & 31) * gain + 127) / 255;
+            row[x] = uint16_t((r << 11) | (g << 5) | b);
         }
     }
     #endif

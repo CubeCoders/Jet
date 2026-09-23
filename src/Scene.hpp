@@ -28,6 +28,13 @@ public:
     Scene(uint16_t* framebuffer, uint16_t* zBuffer, int screenWidth, int screenHeight);
     ~Scene();
 
+    #if POSTFX_CRT
+    /// CRT is available at build time and selectable per frame. Applied before
+    /// sprites; scanout overlays retain their original brightness.
+    bool crtEnabled = true;
+    uint8_t crtIntensity = CRT_SCANLINE_INTENSITY;
+    #endif
+
     int   frameCounter = 0;       ///< Incremented once per render(); useful for animations and dither parity.
     float waterTime    = 0.0f;    ///< Accumulated wall-clock seconds; set each frame by the caller before render/prepareFrame.
 

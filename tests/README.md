@@ -219,3 +219,21 @@ and triangles whose area exceeds int32.
 excluded rows cannot influence output, valid rows still reflect, and disabling
 the cutoff restores unrestricted sampling. Run with both the simple span path
 and the general depth/lighting paths. The cutoff requires a sky gradient.
+
+
+## CRT scanlines and compact fields
+
+`crt_layout.cpp` tests the real PostFX implementation against independent channel
+scaling, with prefix/suffix guards, full/half-width storage, packed fields, odd
+output heights, both physical row parities and intensity endpoints. Build it
+together with `../src/PostFX.cpp`, using an include path for `JetConfig.hpp`.
+Run combinations of `HALF_WIDTH_BUFFERS=0/1` and `FIELD_BUFFERS=0/1`, plus
+`POSTFX_CRT=0` as a no-op check. Set other POSTFX flags to zero. The examples
+repository's `esp32-postfx-crt/tests` CMake project runs all five configurations
+and an integrated Scene test, including matched serial/parallel output.
+
+CRT now scales each channel proportionally by `(255-intensity)/255` instead of
+subtracting raw 5/6-bit channel values. This corrects the documented 0-255
+intensity range and avoids a green cast. Existing CRT-enabled applications may
+need to retune their intensity. `Scene::crtEnabled` and `crtIntensity` are present
+when `POSTFX_CRT=1`; disabled builds preserve their previous rendering path.

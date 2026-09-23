@@ -879,7 +879,9 @@ void Scene::render(RasterExecutor executor) {
     #endif
 
     #if POSTFX_CRT
-    postFX->applyCRT(framebuffer);
+    if (crtEnabled)
+        postFX->applyCRT(framebuffer, crtIntensity, renderer->interlacedMode,
+                         renderEvenLines); // true selects odd physical rows
     #endif
 
     #if POSTFX_PIXELATE
