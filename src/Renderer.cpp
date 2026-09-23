@@ -346,6 +346,11 @@ namespace Renderer
         bool renderEvenLines,bool ignoreZBuffer,bool noWriteZBuffer,int zBias,
         uint8_t objAlpha,bool brightnessPrecomputed,int32_t avgZHint)
     {
+#if Z_BUFFERING && JET_RUNTIME_DEPTH
+        if (!depthTestingEnabled)
+            return drawPainterTriangle(v1,v2,v3,material,directionalLight,ambientLight,
+                renderEvenLines,ignoreZBuffer,noWriteZBuffer,zBias,objAlpha,brightnessPrecomputed,avgZHint);
+#endif
 #if JET_FAST_SIMPLE_SPANS && TEXTURE_MAPPING
         bool textured=material->diffuseMap!=nullptr;
         if(textured && textureLodEnabled && textureLodFar>textureLodNear) {
@@ -368,7 +373,7 @@ namespace Renderer
     // Separate instantiations let the compiler retain the compact flat-fill
     // kernel in a texture-enabled build, without UV/general-loop register
     // pressure spilling into the overwhelmingly common untextured path.
-    template<bool SampleTextures>
+    template<bool SampleTextures, bool UseDepth>
 #if defined(ESP_PLATFORM)
     __attribute__((always_inline))
 #endif
@@ -440,6 +445,17 @@ namespace Renderer
 #endif
         int32_t nearPlane = camera->nearPlane;
         int32_t farPlane = camera->farPlane;
+
+        static constexpr bool perPixelZ = UseDepth || !(Z_BUFFERING && JET_RUNTIME_DEPTH) ||
+            Z_BRIGHTNESS || DEPTH_ALPHA_BLEND || TEXTURE_MAPPING || MAX_PICK_QUERIES > 0;
+#if !FAST_Z
+        if constexpr (!perPixelZ) {
+            // Match the static FAST_Z painter kernel's triangle-level clipping.
+            const int32_t painterZ = avgZHint != INT32_MIN ? avgZHint :
+                int32_t((int64_t(v1.position.z) + v2.position.z + v3.position.z) / 3);
+            if (painterZ < nearPlane || painterZ > farPlane) return false;
+        }
+#endif
 
         // Compute bounding box of the triangle
         int32_t minX = std::min({v1.position.x, v2.position.x, v3.position.x}) & ~1;
@@ -1502,7 +1518,7 @@ namespace Renderer
                     #if Z_BUFFERING
                     // If the z-buffer position is at its maximum for this pixel (as close to the camera as is possible), skip this pixel
                     // since it can't possibly be any closer.
-                    if (zBuffer[zBufferIndex] == 0 && !ignoreZBuffer)
+                    if (UseDepth && !ignoreZBuffer && zBuffer[zBufferIndex] == 0)
                     {
                         continue;
                     }
@@ -1539,13 +1555,13 @@ namespace Renderer
     // Pixel is inside the triangle - render it
     // Interpolate z, u, v
     #if !FAST_Z
-                    int32_t z = wideDepth
-                        ? int32_t(wideZ)
-                        : (v1.position.z*w0 + v2.position.z*w1 + v3.position.z*w2) / denom;
-
-                    if (z < nearPlane || z > farPlane)
-                    {
-                        continue;
+                    // Runtime painter specialization removes depth arithmetic
+                    // as well as memory traffic. Other consumers keep precise Z.
+                    int32_t z = 0;
+                    if constexpr (perPixelZ) {
+                        z = wideDepth ? int32_t(wideZ)
+                            : (v1.position.z*w0 + v2.position.z*w1 + v3.position.z*w2) / denom;
+                        if (z < nearPlane || z > farPlane) continue;
                     }
 
     #if Z_BUFFERING
@@ -1595,7 +1611,7 @@ namespace Renderer
     #endif
 
     #if Z_BUFFERING
-                    if (!ignoreZBuffer && zb > zBuffer[zBufferIndex])
+                    if (UseDepth && !ignoreZBuffer && zb > zBuffer[zBufferIndex])
                     {
                         continue;
                     }
@@ -1685,7 +1701,7 @@ namespace Renderer
     #endif
 
     #if Z_BUFFERING
-                    if (!noWriteZBuffer)
+                    if (UseDepth && !noWriteZBuffer)
                     {
                         zBuffer[zBufferIndex] = static_cast<uint16_t>(zb);
                     }
@@ -1970,7 +1986,7 @@ namespace Renderer
         Material* material,DirectionalLight* directionalLight,AmbientLight* ambientLight,
         bool renderEvenLines,bool ignoreZBuffer,bool noWriteZBuffer,int zBias,
         uint8_t objAlpha,bool brightnessPrecomputed,int32_t avgZHint) {
-        return drawTriangleImpl<false>(v1,v2,v3,material,directionalLight,ambientLight,
+        return drawTriangleImpl<false, Z_BUFFERING != 0>(v1,v2,v3,material,directionalLight,ambientLight,
             renderEvenLines,ignoreZBuffer,noWriteZBuffer,zBias,objAlpha,brightnessPrecomputed,avgZHint);
     }
     bool PERF_CRITICAL Rasterizer::drawTexturedTriangle(
@@ -1978,8 +1994,18 @@ namespace Renderer
         Material* material,DirectionalLight* directionalLight,AmbientLight* ambientLight,
         bool renderEvenLines,bool ignoreZBuffer,bool noWriteZBuffer,int zBias,
         uint8_t objAlpha,bool brightnessPrecomputed,int32_t avgZHint) {
-        return drawTriangleImpl<true>(v1,v2,v3,material,directionalLight,ambientLight,
+        return drawTriangleImpl<true, Z_BUFFERING != 0>(v1,v2,v3,material,directionalLight,ambientLight,
             renderEvenLines,ignoreZBuffer,noWriteZBuffer,zBias,objAlpha,brightnessPrecomputed,avgZHint);
     }
+#if Z_BUFFERING && JET_RUNTIME_DEPTH
+    bool PERF_CRITICAL Rasterizer::drawPainterTriangle(
+        const RenderVertex& v1,const RenderVertex& v2,const RenderVertex& v3,
+        Material* material,DirectionalLight* directionalLight,AmbientLight* ambientLight,
+        bool renderEvenLines,bool ignoreZBuffer,bool noWriteZBuffer,int zBias,
+        uint8_t objAlpha,bool brightnessPrecomputed,int32_t avgZHint) {
+        return drawTriangleImpl<true, false>(v1,v2,v3,material,directionalLight,ambientLight,
+            renderEvenLines,ignoreZBuffer,noWriteZBuffer,zBias,objAlpha,brightnessPrecomputed,avgZHint);
+    }
+#endif
 } // namespace Renderer
 

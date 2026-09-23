@@ -9,6 +9,10 @@
 #include "JetConfig.hpp"
 #include "Picking.hpp"
 
+#ifndef JET_RUNTIME_DEPTH
+#define JET_RUNTIME_DEPTH 0
+#endif
+
 /// @def ZBUFFER_STRIDE(w)
 /// @brief Z-buffer row stride in pixels for a framebuffer of width @p w.
 ///
@@ -151,6 +155,21 @@ class Rasterizer
         int32_t          currentPickTriangleIndex = -1;     ///< Source-mesh triangle index for hit attribution.
 #endif
 
+        /// True when this frame uses depth testing/writes and depth clears.
+        bool isDepthTestingEnabled() const {
+#if Z_BUFFERING && JET_RUNTIME_DEPTH
+            return depthTestingEnabled;
+#else
+            return Z_BUFFERING != 0;
+#endif
+        }
+#if Z_BUFFERING && JET_RUNTIME_DEPTH
+        /// Change only between frames, before Scene::prepareFrame(). This also
+        /// selects painter ordering when disabled. Retains the caller-owned
+        /// depth allocation; re-enabling requires normal buffer clearing.
+        void setDepthTestingEnabled(bool enabled) { depthTestingEnabled = enabled; }
+#endif
+
         /// @brief Test whether a pixel at (x, y) should be drawn given a screen-door alpha.
         /// @param x Pixel X.
         /// @param y Pixel Y.
@@ -202,11 +221,16 @@ class Rasterizer
             screenHeight = newHeight;
         }
     private:
+#if Z_BUFFERING && JET_RUNTIME_DEPTH
+        bool depthTestingEnabled = true;
+        bool drawPainterTriangle(const RenderVertex&, const RenderVertex&, const RenderVertex&,
+            Material*, DirectionalLight*, AmbientLight*, bool, bool, bool, int, uint8_t, bool, int32_t);
+#endif
         bool drawFlatTriangle(const RenderVertex&, const RenderVertex&, const RenderVertex&,
             Material*, DirectionalLight*, AmbientLight*, bool, bool, bool, int, uint8_t, bool, int32_t);
         bool drawTexturedTriangle(const RenderVertex&, const RenderVertex&, const RenderVertex&,
             Material*, DirectionalLight*, AmbientLight*, bool, bool, bool, int, uint8_t, bool, int32_t);
-        template<bool SampleTextures>
+        template<bool SampleTextures, bool UseDepth>
         bool drawTriangleImpl(const RenderVertex&, const RenderVertex&, const RenderVertex&,
             Material*, DirectionalLight*, AmbientLight*, bool, bool, bool, int, uint8_t, bool, int32_t);
     };

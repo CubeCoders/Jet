@@ -411,7 +411,7 @@ void PERF_CRITICAL Scene::clearBuffers() {
                 }
             }
             #if Z_BUFFERING
-            memset(zBuffer, 0xFF, (size_t)screenWidth * screenHeight * sizeof(uint16_t));
+            if (renderer->isDepthTestingEnabled()) memset(zBuffer, 0xFF, (size_t)screenWidth * screenHeight * sizeof(uint16_t));
             #endif
         } else if (renderer->interlacedMode) {
             for (int y = (int)renderEvenLines; y < screenHeight; y += 2) {
@@ -443,9 +443,9 @@ void PERF_CRITICAL Scene::clearBuffers() {
                 #if Z_BUFFERING
                 #if HALF_WIDTH_BUFFERS
                 // Depth rows always use full screen Y, even with packed colour fields.
-                memset(zBuffer + y * ZBUFFER_STRIDE(screenWidth), 0xFF, ZBUFFER_STRIDE(screenWidth) * sizeof(uint16_t));
+                if (renderer->isDepthTestingEnabled()) memset(zBuffer + y * ZBUFFER_STRIDE(screenWidth), 0xFF, ZBUFFER_STRIDE(screenWidth) * sizeof(uint16_t));
                 #else
-                memset(zBuffer + y * screenWidth, 0xFF, screenWidth * sizeof(uint16_t));
+                if (renderer->isDepthTestingEnabled()) memset(zBuffer + y * screenWidth, 0xFF, screenWidth * sizeof(uint16_t));
                 #endif
                 #endif
             }
@@ -505,9 +505,9 @@ void PERF_CRITICAL Scene::clearBuffers() {
             // HALF_WIDTH_BUFFERS is on, per-pixel otherwise. Height is the
             // full screen height regardless.
             #if HALF_WIDTH_BUFFERS
-            memset(zBuffer, 0xFF, (size_t)(screenWidth / 2) * screenHeight * sizeof(uint16_t));
+            if (renderer->isDepthTestingEnabled()) memset(zBuffer, 0xFF, (size_t)(screenWidth / 2) * screenHeight * sizeof(uint16_t));
             #else
-            memset(zBuffer, 0xFF, (size_t)screenWidth * screenHeight * sizeof(uint16_t));
+            if (renderer->isDepthTestingEnabled()) memset(zBuffer, 0xFF, (size_t)screenWidth * screenHeight * sizeof(uint16_t));
             #endif
             #endif
         }
@@ -1454,7 +1454,7 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
                 int b = static_cast<int>((static_cast<int64_t>(key - camera->nearPlane) * K) / range);
                 b = std::max(0, std::min(b, K - 1));
 #if Z_BUFFERING && defined(JET_DEPTH_SORT_OPAQUE_FRONT_TO_BACK) && JET_DEPTH_SORT_OPAQUE_FRONT_TO_BACK
-                const bool opaque = !DEPTH_ALPHA_BLEND && mat && mat->alpha == 255
+                const bool opaque = renderer->isDepthTestingEnabled() && !DEPTH_ALPHA_BLEND && mat && mat->alpha == 255
                     && objAlpha == 255 && !mat->shader
                     && mat->shadingMode != ShadingMode::ADDITIVE
                     && mat->shadingMode != ShadingMode::WATER_REFLECT

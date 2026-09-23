@@ -275,3 +275,10 @@
 // ordering in a later band; backgrounds and overlays keep their special bands.
 // Default 0 retains the original painter ordering. Equal-depth ties can change.
 // #define JET_DEPTH_SORT_OPAQUE_FRONT_TO_BACK 1
+
+// Optional runtime depth/painter switch via Rasterizer::setDepthTestingEnabled.
+// Requires Z_BUFFERING=1; builds a separate painter kernel (extra code/IRAM).
+// Disabled by default: ordinary builds retain their existing static kernels.
+#ifndef JET_RUNTIME_DEPTH
+#define JET_RUNTIME_DEPTH 0
+#endif
