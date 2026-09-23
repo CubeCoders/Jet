@@ -37,6 +37,16 @@
      !LIGHTING && !Z_BRIGHTNESS && !DEBUG_OVERDRAW &&                        \
      !RENDER_TILE_BUFFER && FAST_Z && !PERSPECTIVE_CORRECT_TEXTURES)
 
+// Keep opaque untextured UNLIT scenery cheap in lit/textured builds too.
+// Disable independently for reference comparisons. Material checks below keep
+// textures, shaders, fog, alpha, picking and special shading on their old paths.
+#ifndef JET_FAST_OPAQUE_UNLIT_SPANS
+#define JET_FAST_OPAQUE_UNLIT_SPANS \
+    (HALF_WIDTH_BUFFERS && FAST_Z && !Z_BUFFERING && !Z_BRIGHTNESS && \
+     !DEPTH_ALPHA_BLEND && !NOISE_ALPHA && !DEBUG_OVERDRAW && \
+     !RENDER_TILE_BUFFER && MAX_PICK_QUERIES == 0 && !JET_FAST_SIMPLE_SPANS)
+#endif
+
 // Standard "over" alpha blend in RGB565. Used when SCREEN_DOOR_ALPHA is
 // disabled — the renderer still has to honour material->alpha and the
 // per-object fade, just by lerping channels into the framebuffer instead of
@@ -826,6 +836,14 @@ namespace Renderer
 #endif
 
         const bool plainOpaqueReplace = (alpha == 255 && !isWaterReflect && !isAdditive);
+#if JET_FAST_OPAQUE_UNLIT_SPANS
+        const bool fastOpaqueUnlit = alpha == 255 && !material->shader &&
+            material->shadingMode == ShadingMode::UNLIT
+    #if TEXTURE_MAPPING
+            && !diffuseMap
+    #endif
+            ;
+#endif
 
 #if PERSPECTIVE_CORRECT_TEXTURES
         int32_t oneOverZ1 = (FIXED_POINT_SCALE * FIXED_POINT_SCALE) / v1.position.z;
@@ -1090,6 +1108,32 @@ namespace Renderer
 
                 const int xStart = minX + iStart * xStep;
                 const int xEnd   = minX + iEnd   * xStep;
+
+#if JET_FAST_OPAQUE_UNLIT_SPANS
+                if (fastOpaqueUnlit) {
+                    // Match the general loop's edge test at both ends. Edge
+                    // functions are linear, so the remaining interval is inside.
+                    int first=xStart,last=xEnd;
+                    int64_t a=ew0,b=ew1,c=ew2;
+                    while(first<=last && (a|b|c)<0) {
+                        first+=2;a+=dw0_dx_step;b+=dw1_dx_step;c+=dw2_dx_step;
+                    }
+                    const int steps=(last-first)/2;
+                    a+=steps*int64_t(dw0_dx_step);b+=steps*int64_t(dw1_dx_step);c+=steps*int64_t(dw2_dx_step);
+                    while(last>=first && (a|b|c)<0) {
+                        last-=2;a-=dw0_dx_step;b-=dw1_dx_step;c-=dw2_dx_step;
+                    }
+                    if(first<=last) {
+    #if FIELD_BUFFERS
+                        const int row=y/2;
+    #else
+                        const int row=y;
+    #endif
+                        fillRGB565Span(framebuffer,row*(screenWidth/2)+first/2,(last-first)/2+1,baseColor);
+                    }
+                    continue;
+                }
+#endif
 
                 // Wireframe / outline mode. The per-row solver above already
                 // gave us the leftmost and rightmost x for this scanline of
