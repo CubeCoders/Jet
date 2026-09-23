@@ -254,3 +254,19 @@ The runtime `celShadingEnabled` and `celShadingBits` controls exist when
 Quantisation now also applies before the flat-colour modulation hoist; previously
 untextured flat shading bypassed it. Ambient and additive Phong gloss remain
 unquantised, and compile-time disabled builds retain the original path.
+
+
+## Fixed particle pools and accounting
+
+`particle_system.cpp` checks capped emission, occupied-slot preservation, dead-slot
+reuse, semi-implicit gravity, lifespan expiry, optional additive spark blending,
+unchanged water blending, physical field parity, projection/distance/fade culling,
+accepted-triangle accounting and buffer guards. Build against Jet with the
+particle example's unlit, untextured, half-width packed-field, depth-disabled
+configuration. `esp32-particles/tests` also runs a complete staged scene cycle.
+
+`ParticleSystem::additiveSparks` defaults false. `activeCount()` reports pool
+occupancy; `lastRenderedTriangles` is reset on every render call, including invalid
+scene/camera calls, and increments only when the rasterizer accepts a triangle.
+Callers rendering separately clipped bands must aggregate counts themselves;
+the showcase draws particles once, serially, after opaque band workers join.

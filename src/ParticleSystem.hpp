@@ -70,6 +70,17 @@ public:
 
     Particle pool[PARTICLE_POOL_SIZE] = {};
 
+    /// Optional emissive additive sparks; water droplets retain alpha-over.
+    /// False preserves the original compositing behaviour.
+    bool additiveSparks = false;
+    unsigned lastRenderedTriangles = 0; ///< Accepted triangles in the last render call.
+    unsigned activeCount() const {
+        unsigned count = 0;
+        for (const auto& p : pool) count += p.active;
+        return count;
+    }
+
+
     // ---- Emitters ----------------------------------------------------------
 
     /// @brief Emit sparks from a ship-vs-ship or ship-vs-wall impact.
@@ -179,6 +190,7 @@ public:
     /// @param screenW Render width in pixels.
     /// @param screenH Render height in pixels.
     void render(Scene* scene, Camera* cam, int screenW, int screenH) {
+        lastRenderedTriangles = 0;
         if (!scene || !cam) return;
         Rasterizer* raster = scene->getRenderer();
         if (!raster) return;
@@ -283,6 +295,8 @@ public:
                 particleCol = SPARK_COL_BLUE;
             }
             mat.color = particleCol;
+            mat.shadingMode = additiveSparks && p.kind == ParticleKind::Spark
+                ? ShadingMode::ADDITIVE : ShadingMode::FLAT;
 
             // Transform world pos to camera space
             const int32_t wx = (int32_t)p.pos.x - cam->position.x;
@@ -348,12 +362,12 @@ public:
             v1.position = { bx + perpX, by + perpY, camZ };
             v2.position = { bx - perpX, by - perpY, camZ };
 
-            raster->drawTriangle(v0, v1, v2, &mat,
+            if (raster->drawTriangle(v0, v1, v2, &mat,
                                  nullptr, nullptr,
                                  rEL,
                                  /*ignoreZ*/ false, /*noWriteZ*/ true,
                                  /*zBias*/   0,
-                                 objAlpha);
+                                 objAlpha)) ++lastRenderedTriangles;
         }
     }
 
