@@ -35,6 +35,7 @@ uint16_t Texture::getPixel(int u, int v)
     }
 
     #if BILINEAR_FILTER
+    if (bilinear && !palette) {
     // Compute scaled texture coordinates
     uint32_t scaledU = u * (width - 1);
     uint32_t scaledV = v * (height - 1);
@@ -93,7 +94,9 @@ uint16_t Texture::getPixel(int u, int v)
 
     // Recombine RGB components into a 16-bit color
     uint16_t color = ((r & 0x1F) << 11) | ((g & 0x3F) << 5) | (b & 0x1F);
-    #else
+    return color;
+    }
+    #endif
     // Scale down the fixed-point UV coordinates to the texture dimensions
     u = (u * width) / FIXED_POINT_SCALE;
     v = (v * height) / FIXED_POINT_SCALE;
@@ -113,7 +116,6 @@ uint16_t Texture::getPixel(int u, int v)
     else {
         color = data[v * width + u];
     }
-    #endif
 
     return color;
 }

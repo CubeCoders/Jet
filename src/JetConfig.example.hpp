@@ -87,11 +87,15 @@
 #define TEXTURE_MAPPING 0
 
 // PERSPECTIVE_CORRECT_TEXTURES: Correct the affine warp with per-pixel W
-// division. More accurate; noticeably slower. Requires TEXTURE_MAPPING.
+// division. More accurate; noticeably slower. When compiled in, materials
+// default to perspective UVs but can select affine via perspectiveCorrect=false.
+// The runtime flag affects UVs, not the build's Phong normal interpolation.
 #define PERSPECTIVE_CORRECT_TEXTURES 0
 
 // BILINEAR_FILTER: Bi-linear interpolation between texels during texture
 // sampling. Reduces blockiness at the cost of extra multiplies per pixel.
+// When compiled in, direct RGB565 textures default to bilinear; set
+// texture.bilinear=false for nearest. Indexed textures retain nearest sampling.
 // Requires TEXTURE_MAPPING.
 #define BILINEAR_FILTER 0
 

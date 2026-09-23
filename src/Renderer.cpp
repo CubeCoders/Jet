@@ -405,6 +405,7 @@ namespace Renderer
 
 #if TEXTURE_MAPPING
         Texture *diffuseMap = SampleTextures ? material->diffuseMap : nullptr;
+        const bool usePerspectiveUV = PERSPECTIVE_CORRECT_TEXTURES && material->perspectiveCorrect;
 #endif
         const bool isWaterReflect = (material->shadingMode == ShadingMode::WATER_REFLECT);
         const bool isAdditive     = (material->shadingMode == ShadingMode::ADDITIVE);
@@ -659,7 +660,7 @@ namespace Renderer
         const float invDenom64f = 1.0f / (float)denom64;
 #endif
 
-#if TEXTURE_MAPPING && !PERSPECTIVE_CORRECT_TEXTURES
+#if TEXTURE_MAPPING
         // Affine UVs are planes. One reciprocal per triangle and one anchor
         // per scanline replace two barycentric divides at every pixel.
         // Q16 retains sub-texel precision even on wide desktop spans. Bound
@@ -671,7 +672,7 @@ namespace Renderer
             return v.uv.x >= -uvLimit && v.uv.x <= uvLimit
                 && v.uv.y >= -uvLimit && v.uv.y <= uvLimit;
         };
-        bool incrementalUV = diffuseMap && !diffuseMap->screenSpace && !diffuseMap->reflectionMap
+        bool incrementalUV = !usePerspectiveUV && diffuseMap && !diffuseMap->screenSpace && !diffuseMap->reflectionMap
             && boundedUV(v1) && boundedUV(v2) && boundedUV(v3);
         int32_t uStepQ16=0, vStepQ16=0;
     #if !BILINEAR_FILTER
@@ -884,7 +885,7 @@ namespace Renderer
         const int32_t dw1_dy_step = dw1_dy * inc;
         const int32_t dw2_dy_step = dw2_dy * inc;
 
-#if TEXTURE_MAPPING && !PERSPECTIVE_CORRECT_TEXTURES
+#if TEXTURE_MAPPING
         if (incrementalUV) {
             const float du = (float)((int64_t)v1.uv.x*dw0_dx_step + (int64_t)v2.uv.x*dw1_dx_step
                                   + (int64_t)v3.uv.x*dw2_dx_step) * uvInvArea;
@@ -1363,7 +1364,7 @@ namespace Renderer
                    // the fast path is also compiled (TEXTURE_MAPPING build),
                    // or unconditionally when JET_FAST_SIMPLE_SPANS is
                    // false (any of the heavy features enabled).
-#if TEXTURE_MAPPING && !PERSPECTIVE_CORRECT_TEXTURES
+#if TEXTURE_MAPPING
                 int32_t uQ16=0,vQ16=0;
                 bool rowIncrementalUV=incrementalUV;
                 if (rowIncrementalUV) {
@@ -1580,6 +1581,7 @@ namespace Renderer
                         else
                         {
     #if PERSPECTIVE_CORRECT_TEXTURES
+                            if (usePerspectiveUV) {
                             // Interpolate 1/z, u/z, and v/z at the current pixel
                             int32_t interpolatedOneOverZ = (oneOverZ1 * w0 + oneOverZ2 * w1 + oneOverZ3 * w2) / denom;
                             int32_t interpolatedUOverZ = (uOverZ1 * w0 + uOverZ2 * w1 + uOverZ3 * w2) / denom;
@@ -1592,7 +1594,9 @@ namespace Renderer
                             // Compute final texture coordinates
                             uv.x = (interpolatedUOverZ * FIXED_POINT_SCALE) / interpolatedOneOverZ;
                             uv.y = (interpolatedVOverZ * FIXED_POINT_SCALE) / interpolatedOneOverZ;
-    #else // Affine texture mapping
+                            } else
+    #endif
+                            { // Affine texture mapping
                             if (rowIncrementalUV) {
                                 uv.x = uQ16 / 65536;
                                 uv.y = vQ16 / 65536;
@@ -1600,7 +1604,7 @@ namespace Renderer
                                 uv.x = (int32_t)(((double)v1.uv.x * ew0 + (double)v2.uv.x * ew1 + (double)v3.uv.x * ew2) / denom64);
                                 uv.y = (int32_t)(((double)v1.uv.y * ew0 + (double)v2.uv.y * ew1 + (double)v3.uv.y * ew2) / denom64);
                             }
-    #endif
+                            }
                         }
 
                         // Sample color from material

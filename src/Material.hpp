@@ -34,6 +34,8 @@ public:
     uint8_t alpha;              ///< Per-material alpha (0=invisible, 255=opaque).
     uint8_t diffuse;            ///< Diffuse reflectance coefficient (0..255).
     uint8_t specular;           ///< Specular reflectance coefficient (0..255).
+    bool perspectiveCorrect = PERSPECTIVE_CORRECT_TEXTURES != 0; ///< UV interpolation only; false selects affine.
+                                                                ///< Perspective support must be compiled in.
     uint8_t specularExponent = 0; ///< PHONG only: 0 keeps the legacy broad highlight;
                                   ///< 1..255 enables additive Blinn-Phong gloss (try 32).
                                   ///< Uses a fixed view direction and a per-triangle half-vector.

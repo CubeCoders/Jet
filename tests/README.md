@@ -202,3 +202,10 @@ Both can be built as standalone C++17 executables with `src` and the frontend's
 `JET_DEPTH_SORT_OPAQUE_FRONT_TO_BACK=1`. It checks 24 object submission orders
 with opaque occlusion, blended faces, no-depth-write backgrounds and depth-
 ignoring overlays. Build with the Scene sources and matching frontend config.
+
+
+`texture_options.cpp` checks independent per-material UV mapping and per-texture
+filtering, analytic affine/perspective reference texels, bilinear interpolation,
+palette safety and framebuffer guards. Build with TEXTURE_MAPPING=1 and each
+combination of PERSPECTIVE_CORRECT_TEXTURES/BILINEAR_FILTER to verify disabled
+capabilities remain disabled. Match the test and library configurations.

@@ -31,6 +31,8 @@ namespace Renderer
         int       paletteSize  = 0;         ///< Number of entries in palette (0 = non-animated / full 256).
         int       paletteOffset = 0;        ///< Current animation offset; added to every index before lookup.
 
+        bool bilinear = BILINEAR_FILTER != 0; ///< Per-texture filter when BILINEAR_FILTER is compiled in.
+                                             ///< false selects nearest; palette textures use nearest.
         bool reflectionMap = false;         ///< When true, sampled via reflected view direction instead of UV.
         char* name = nullptr;               ///< Optional name for asset lookup.
 

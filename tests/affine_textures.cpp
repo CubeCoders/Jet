@@ -78,7 +78,7 @@ int main() {
             // in triangle_spans.cpp. This also handles field/band layouts.
             const auto actual=fb[index]; if(actual==0xffff) continue;
             if(y<raster.yBandMin || y>=raster.yBandMax) continue;
-            if(raster.interlacedMode && ((y&1)!=((raster.yBandMin+(int)even)&1))) continue;
+            if(raster.interlacedMode && ((y&1)!=(int)even)) continue;
             if(raster.checkerboardMode && (((x^y)&1)!=(even?0:1))) continue;
             const double w0=(double)(b.position.y-c.position.y)*(x-c.position.x)+(double)(c.position.x-b.position.x)*(y-c.position.y);
             const double w1=(double)(c.position.y-a.position.y)*(x-c.position.x)+(double)(a.position.x-c.position.x)*(y-c.position.y);
