@@ -178,6 +178,15 @@ class Rasterizer
         bool shouldDrawPixel(int x, int y, uint8_t alpha);
 
         /// @brief Rasterise a single triangle.
+        /// @details Matching view-space vertex normals automatically share one
+        /// lighting evaluation for Phong/Gouraud, retaining each mode's specular
+        /// model. Cached Gouraud brightness must also match. Exact normal equality
+        /// is required; custom shaders and depth-brightness builds keep their old
+        /// path. This relies on the directional light and fixed view vector: any
+        /// future position-dependent per-pixel lighting must bypass the shortcut.
+        /// Constant Phong avoids fixed-point normal interpolation roundoff, so
+        /// output need not be bit-identical to the unoptimised path. Define
+        /// JET_CONSTANT_NORMAL_LIGHTING=0 when compiling Jet for comparisons.
         /// @param v1 First vertex.
         /// @param v2 Second vertex.
         /// @param v3 Third vertex.

@@ -47,6 +47,11 @@
      !RENDER_TILE_BUFFER && MAX_PICK_QUERIES == 0 && !JET_FAST_SIMPLE_SPANS)
 #endif
 
+// Reference builds can disable this automatic per-triangle optimisation.
+#ifndef JET_CONSTANT_NORMAL_LIGHTING
+#define JET_CONSTANT_NORMAL_LIGHTING 1
+#endif
+
 // Standard "over" alpha blend in RGB565. Used when SCREEN_DOOR_ALPHA is
 // disabled — the renderer still has to honour material->alpha and the
 // per-object fade, just by lerping channels into the framebuffer instead of
@@ -532,6 +537,16 @@ namespace Renderer
         Vector3 normal = {0, 0, 0};
         uint16_t vertexBrightness[3] = {0, 0, 0};
 
+        // Exact equality after transforms/clipping: never flatten nearly equal
+        // normals on a smooth surface. The current directional light and fixed
+        // view vector make both diffuse and specular constant in this case.
+        // Keep custom shaders and depth-brightness builds on their existing path.
+        const bool matchingNormals = JET_CONSTANT_NORMAL_LIGHTING && !Z_BRIGHTNESS &&
+            !emissive && !material->shader && directionalLight &&
+            v1.normal.x == v2.normal.x && v1.normal.x == v3.normal.x &&
+            v1.normal.y == v2.normal.y && v1.normal.y == v3.normal.y &&
+            v1.normal.z == v2.normal.z && v1.normal.z == v3.normal.z;
+
         // Per-channel ambient tint. The ambient light contributes a constant
         // offset that is added to each colour channel independently during
         // the final modulation step, so a cool-toned AmbientLight actually
@@ -590,7 +605,7 @@ namespace Renderer
                 else
                 {
                     const RenderVertex* verts[3] = { &v1, &v2, &v3 };
-                    for (int i = 0; i < 3; i++)
+                    for (int i = 0; i < (matchingNormals ? 1 : 3); i++)
                     {
                         vertexBrightness[i] = jetShadeBrightness(
                             verts[i]->normal,
@@ -599,6 +614,8 @@ namespace Renderer
                             material->diffuse,
                             material->specular);
                     }
+                    if (matchingNormals)
+                        vertexBrightness[1] = vertexBrightness[2] = vertexBrightness[0];
                 }
             }
         }
@@ -760,6 +777,34 @@ namespace Renderer
                 // the modulation step, so the lit-scalar contribution is
                 // zero here.
                 brightness = 0;
+            }
+        }
+#endif
+
+#if LIGHTING
+        // Cached Gouraud values may encode different per-vertex contributions
+        // even when normals match; preserve their interpolation in that case.
+        const bool constantLighting = matchingNormals &&
+            (material->shadingMode == ShadingMode::PHONG ||
+             (material->shadingMode == ShadingMode::GOURAUD &&
+              vertexBrightness[0] == vertexBrightness[1] &&
+              vertexBrightness[0] == vertexBrightness[2]));
+        uint16_t constantBrightness = 0, constantGloss = 0;
+        if (constantLighting) {
+            if (material->shadingMode == ShadingMode::GOURAUD) {
+                constantBrightness = vertexBrightness[0];
+            } else {
+                Vector3 faceNormal = v1.normal;
+                const auto length = faceNormal.length();
+                if (length > 0)
+                    faceNormal = (faceNormal * static_cast<int32_t>(FIXED_POINT_SCALE)) / length;
+                int64_t normalDotLight;
+                constantBrightness = jetShadeBrightness(faceNormal,
+                    directionalLight->lightDir, lightIntensity, material->diffuse,
+                    glossyPhong ? 0 : material->specular, 256, &normalDotLight);
+                if (glossyPhong && normalDotLight > 0)
+                    constantGloss = detail::phongSpecular(faceNormal, specularHalf,
+                        material->specularExponent, material->specular, lightIntensity);
             }
         }
 #endif
@@ -959,7 +1004,7 @@ namespace Renderer
         // still steps an int32 accumulator.
         int32_t brightness_dx_step_q16 = 0;
         const bool useIncrementalGouraud =
-            directionalLight && material->shadingMode == ShadingMode::GOURAUD;
+            directionalLight && !constantLighting && material->shadingMode == ShadingMode::GOURAUD;
         if (useIncrementalGouraud)
         {
             const int64_t bDx = (int64_t)vertexBrightness[0] * dw0_dx_step
@@ -1781,11 +1826,17 @@ namespace Renderer
                     continue;
     #else
     #if LIGHTING
-                    uint16_t gloss = 0;
+                    uint16_t gloss = constantGloss;
     #endif
     #if LIGHTING || Z_BRIGHTNESS
                     if (directionalLight)
                     {
+    #if LIGHTING
+                        if (constantLighting) {
+                            brightness = constantBrightness;
+                        }
+                        else
+    #endif
                         if (material->shadingMode == ShadingMode::GOURAUD)
                         {
                             // Plane-equation incremental Gouraud brightness:
