@@ -11,6 +11,10 @@
 #include "PostFX.hpp"
 #include "Sprite2D.hpp"
 
+#ifndef JET_SORT_DEPTH_BUCKETS
+#define JET_SORT_DEPTH_BUCKETS 64
+#endif
+
 namespace Renderer {
 
 /// @brief Top-level container that owns the scene graph and drives rendering.
@@ -261,15 +265,16 @@ private:
 #endif
     };
     std::vector<RenderTri> renderQueue;
-    // One byte per triangle: background, 64 far-to-near depth buckets,
-    // then overlay. Sorting never needs to fetch the full triangle payload.
+    // One byte per triangle: background, configurable depth buckets, overlay.
+    // More buckets retain near-field ordering with longer camera far planes.
+    static constexpr int SortDepthBucketCount = JET_SORT_DEPTH_BUCKETS;
 #if Z_BUFFERING && defined(JET_DEPTH_SORT_OPAQUE_FRONT_TO_BACK) && JET_DEPTH_SORT_OPAQUE_FRONT_TO_BACK
-    // Background, 64 near-to-far opaque buckets, 64 far-to-near blended
-    // buckets, overlays. All keys still fit one byte.
-    static constexpr int SortBucketCount = 130;
+    static constexpr int SortBucketCount = 2 * SortDepthBucketCount + 2;
 #else
-    static constexpr int SortBucketCount = 66;
+    static constexpr int SortBucketCount = SortDepthBucketCount + 2;
 #endif
+    static_assert(SortDepthBucketCount > 0 && SortBucketCount <= 256,
+        "JET_SORT_DEPTH_BUCKETS must fit byte keys (1..254, or 1..127 with opaque front-to-back sorting)");
     std::vector<uint8_t> renderBuckets;
     // Painter's-sort output as indices into renderQueue, rebuilt by
     // prepareFrame() each frame. Sorting (scattering) 4-byte indices

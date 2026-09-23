@@ -775,8 +775,8 @@ void Scene::prepareFrame() {
     // are thousands). Tune if the scale of the world changes significantly.
     // Bucket sort: O(N) vs O(N log N) for std::sort. Separates the three
     // draw bands with one linear pass, then counting-sorts the normal band
-    // by depth in K=64 buckets (farther triangles first). Within a bucket
-    // (~Z_RANGE/64 depth units) relative order is preserved (stable).
+    // by depth in K configurable buckets (farther triangles first). Within a bucket
+    // (~Z_RANGE/K depth units) relative order is preserved (stable).
     //
     // The sort scatters 4-byte INDICES into renderOrder rather than moving
     // the RenderTri structs themselves — the queue entries stay where
@@ -1462,14 +1462,14 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
         rt.sourceTriangleIndex = srcTriIdx;
 #endif
         renderQueue.push_back(rt);
-        // Default: preserve the stable 64-bucket ordering, including
+        // Preserve stable bucket ordering and the special draw bands, including
         // noWriteZBuffer taking precedence when both special flags are set.
         uint8_t bucket = 0;
         if (!noWriteZBuffer) {
             bucket = SortBucketCount - 1;
             if (!ignoreZBuffer) {
                 constexpr int32_t zBiasScale = 256;
-                constexpr int K = 64;
+                constexpr int K = SortDepthBucketCount;
                 const int32_t key = avgZ - static_cast<int32_t>(obj->zBias) * zBiasScale;
                 const int32_t range = std::max<int32_t>(camera->farPlane - camera->nearPlane, 1);
                 int b = static_cast<int>((static_cast<int64_t>(key - camera->nearPlane) * K) / range);

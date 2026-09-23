@@ -69,6 +69,12 @@
 // first) before rasterizing. Recommended when Z_BUFFERING is off.
 #define SORT_TRIANGLES 1
 
+// More depth buckets preserve painter ordering when increasing camera.farPlane.
+// Default 64. Each extra bucket costs 8 bytes of temporary sorting stack;
+// triangle keys remain one byte. Range 1..254, or 1..127 when opaque
+// front-to-back depth sorting is enabled. This remains approximate sorting.
+#define JET_SORT_DEPTH_BUCKETS 64
+
 // SORT_SCENE_OBJECTS: Sort scene objects by camera distance before rendering.
 // Recommended when Z_BUFFERING is on to exploit early-Z rejection.
 #define SORT_SCENE_OBJECTS 0

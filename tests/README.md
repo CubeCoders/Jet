@@ -284,3 +284,11 @@ Lit/perspective-capable painter builds can compare their normal output with
 `JET_SKIP_UNLIT_NORMALS=0`. These switches disable only the optional shortcuts;
 empty-bound rejection and independent additive source colours remain fixes in
 both implementations.
+
+## Extended painter range
+
+`painter_buckets.cpp` uses 128 buckets, packed fields and no depth buffer. It
+checks two overlapping surfaces 70 units apart with a 9000-unit far plane,
+reversed insertion order, equal-depth stability, overlays and the precedence
+of background over the overlay flag. The film native suite runs this test.
+Other projects retain the default 64 buckets unless configured explicitly.
