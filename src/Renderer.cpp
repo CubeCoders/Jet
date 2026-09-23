@@ -12,30 +12,16 @@
 #error "CHECKERBOARD_MODE and FIELD_BUFFERS (interlaced) cannot both be enabled. Each would render only one quarter of pixels per frame and interact destructively. Pick one."
 #endif
 
-// JET_FAST_SIMPLE_SPANS: private to this TU. When the rasterizer is
-// configured without any per-pixel machinery (z-buffer, lighting,
-// brightness, debug overdraw, tile tagging, perspective textures) the inner
-// pixel loop degenerates to "maybe write a constant color, gated by a
-// triangle-constant dither mask". The scanline-range solver above the inner
-// loop already computes the exact [xStart, xEnd] range where the triangle
-// is inside, so the per-pixel edge-accumulate/test is pure dead weight.
-// Under SCREEN_DOOR_ALPHA the dither threshold reduces to two per-row
-// booleans (HALF_WIDTH only steps through x%4 ∈ {0, 2}). That unlocks a
-// tight fill loop that the compiler can unroll and the CPU can pipeline.
-// Automatic - nothing to turn on in Config.hpp; this simply kicks in when
-// none of the heavy features are enabled. Non-qualifying builds fall
-// through to the full general-purpose inner loop unchanged.
-//
-// NOTE: TEXTURE_MAPPING is intentionally NOT in this set. When texture
-// mapping is compiled in, untextured triangles still take the fast path
-// (decided per-triangle via the runtime `useFastSimpleSpan` flag); only
-// triangles that actually carry a diffuse map fall through to the
-// general per-pixel loop. This means enabling TEXTURE_MAPPING globally
-// no longer penalises scenes that mostly draw flat-shaded geometry.
-#define JET_FAST_SIMPLE_SPANS                                             \
-    (HALF_WIDTH_BUFFERS && !Z_BUFFERING &&                                   \
-     !LIGHTING && !Z_BRIGHTNESS && !DEBUG_OVERDRAW &&                        \
-     !RENDER_TILE_BUFFER && FAST_Z && !PERSPECTIVE_CORRECT_TEXTURES)
+// Flat, emissive materials can use span fills/blends even when lighting and
+// perspective textures are available elsewhere in the scene. Eligibility is
+// per material below; lit faces and shaders retain the general rasterizer.
+// Reference builds can disable this path for pixel-for-pixel comparisons.
+#ifndef JET_FAST_SIMPLE_SPANS
+#define JET_FAST_SIMPLE_SPANS \
+    (HALF_WIDTH_BUFFERS && !Z_BUFFERING && FAST_Z && !Z_BRIGHTNESS && \
+     !DEPTH_ALPHA_BLEND && !NOISE_ALPHA && !DEBUG_OVERDRAW && \
+     !RENDER_TILE_BUFFER && MAX_PICK_QUERIES == 0)
+#endif
 
 // Keep opaque untextured UNLIT scenery cheap in lit/textured builds too.
 // Disable independently for reference comparisons. Material checks below keep
@@ -444,19 +430,16 @@ namespace Renderer
 #endif
 
 #if JET_FAST_SIMPLE_SPANS
-    #if TEXTURE_MAPPING
-        // Per-triangle decision: untextured triangles take the fast simple
-        // span path even in builds with TEXTURE_MAPPING enabled. Only
-        // triangles that actually have a diffuse map pay for the general
-        // per-pixel loop. Non-const because the texture-LOD pass below may
-        // promote a fully-flat-LOD textured triangle back onto the fast
-        // path (texture is dropped entirely past textureLodFar).
-        bool useFastSimpleSpan = (diffuseMap == nullptr);
-    #else
-        // No textures compiled in the fast path is unconditional and
-        // this constexpr lets the optimiser fold the runtime branch out.
-        constexpr bool useFastSimpleSpan = true;
+        const bool simpleMaterial = !material->shader
+    #if LIGHTING
+            && emissive
     #endif
+            ;
+        bool useFastSimpleSpan = simpleMaterial
+    #if TEXTURE_MAPPING
+            && !diffuseMap
+    #endif
+            ;
 #endif
         int32_t nearPlane = camera->nearPlane;
         int32_t farPlane = camera->farPlane;
@@ -531,7 +514,10 @@ namespace Renderer
         maxX = std::min(maxX, static_cast<int32_t>(screenWidth - 1));
         minY = std::max(minY, static_cast<int32_t>(yBandMin));
         maxY = std::min(maxY, static_cast<int32_t>(std::min(yBandMax - 1, screenHeight - 1)));
-        if (minY > maxY) return false;
+        // Empty horizontal clips must be rejected before half-width slot division.
+        // (screenWidth - 1 - screenWidth) / 2 truncates to zero and otherwise
+        // produces an out-of-bounds pixel at x=screenWidth on the last row.
+        if (minX > maxX || minY > maxY) return false;
 
 #if LIGHTING
         Vector3 normal = {0, 0, 0};
@@ -667,7 +653,7 @@ namespace Renderer
                 textureLodFade = 0;
                 color = material->color; // Flat fallback for the fast path.
             #if JET_FAST_SIMPLE_SPANS
-                useFastSimpleSpan = true;
+                useFastSimpleSpan = simpleMaterial;
             #endif
             }
             else if (lodZ > textureLodNear)
@@ -1035,10 +1021,6 @@ namespace Renderer
         Detail::TriangleSpans spans({v1.position.x, v1.position.y},
                                    {v2.position.x, v2.position.y},
                                    {v3.position.x, v3.position.y}, yStart, inc);
-        // Keep the original solver for inverted horizontal bounds. In
-        // half-width mode its truncating slot division can still yield a
-        // slot at x=screenWidth; changing that clipping behavior is separate.
-        if (minX > maxX) spans.valid = false;
         if (spans.valid) yStart = spans.firstY;
         int64_t w0_row = (int64_t)dw0_dx * (minX - v3.position.x)
                        + (int64_t)dw0_dy * (yStart - v3.position.y);
@@ -1375,12 +1357,7 @@ namespace Renderer
                 }
 
     #if JET_FAST_SIMPLE_SPANS
-    #if TEXTURE_MAPPING
-                // Untextured triangles take the fast simple-span path even in
-                // builds where TEXTURE_MAPPING is compiled in. Textured ones
-                // fall through to the general per-pixel loop below.
                 if (useFastSimpleSpan)
-    #endif
                 {
                 // Fast simple-span path. See JET_FAST_SIMPLE_SPANS comment at
                 // the top of the TU. Skips per-pixel edge accumulate/test (the
@@ -1495,12 +1472,10 @@ namespace Renderer
                 }
     #endif // SCREEN_DOOR_ALPHA
                 }  // close fast simple-span block
-    #if TEXTURE_MAPPING
                 else
-    #endif
     #endif // JET_FAST_SIMPLE_SPANS
 
-    #if !JET_FAST_SIMPLE_SPANS || TEXTURE_MAPPING
+    // General fallback for textures, lighting and custom shaders.
                 {  // General per-pixel path. Runs as the textured `else` when
                    // the fast path is also compiled (TEXTURE_MAPPING build),
                    // or unconditionally when JET_FAST_SIMPLE_SPANS is
@@ -1527,8 +1502,8 @@ namespace Renderer
 #else
     #define JET_UV_STEP
 #endif
-#if JET_FAST_SIMPLE_SPANS && TEXTURE_MAPPING && !PERSPECTIVE_CORRECT_TEXTURES && !BILINEAR_FILTER
-                if (decltype(useSpans)::value && rowIncrementalUV && directRGB565
+#if JET_FAST_SIMPLE_SPANS && TEXTURE_MAPPING && !BILINEAR_FILTER
+                if (simpleMaterial && decltype(useSpans)::value && rowIncrementalUV && directRGB565
                     && plainOpaqueReplace && !diffuseMap->hasAlpha) {
                     // Opaque affine tiles need neither per-pixel edge tests
                     // nor the lighting/alpha/depth machinery of the general
@@ -1759,7 +1734,7 @@ namespace Renderer
                         }
 
                         // Sample color from material
-    #if !PERSPECTIVE_CORRECT_TEXTURES && !BILINEAR_FILTER
+    #if !BILINEAR_FILTER
                         if (directRGB565) {
                             const unsigned tx=((unsigned)uv.x & (FIXED_POINT_SCALE-1))*diffuseMap->width/FIXED_POINT_SCALE;
                             const unsigned ty=((unsigned)uv.y & (FIXED_POINT_SCALE-1))*diffuseMap->height/FIXED_POINT_SCALE;
@@ -2032,6 +2007,13 @@ namespace Renderer
                 {
                     // Pre-compute the saturating add into `color` so the
                     // standard write path below emits it without a second blend.
+                    // The blended result must not become the next pixel's
+                    // source on untextured emissive faces.
+#if TEXTURE_MAPPING
+                    if (!diffuseMap && !material->shader) color = baseColor;
+#else
+                    if (!material->shader) color = baseColor;
+#endif
                     color    = addBlendRGB565(framebuffer[bufferIndex], color, pixAlpha);
                     pixAlpha = 255;
                 }
@@ -2065,11 +2047,11 @@ namespace Renderer
 
     #endif
                 }
-#if JET_FAST_SIMPLE_SPANS && TEXTURE_MAPPING && !PERSPECTIVE_CORRECT_TEXTURES && !BILINEAR_FILTER
+#if JET_FAST_SIMPLE_SPANS && TEXTURE_MAPPING && !BILINEAR_FILTER
                 } // general fallback for textured spans
 #endif
                 }  // close general per-pixel path block
-    #endif // !JET_FAST_SIMPLE_SPANS || TEXTURE_MAPPING
+
     #undef JET_LIT_STEP
     #undef JET_UV_STEP
     #undef JET_DEPTH_STEP

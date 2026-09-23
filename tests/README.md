@@ -270,3 +270,17 @@ occupancy; `lastRenderedTriangles` is reset on every render call, including inva
 scene/camera calls, and increments only when the rasterizer accepts a triangle.
 Callers rendering separately clipped bands must aggregate counts themselves;
 the showcase draws particles once, serially, after opaque band workers join.
+
+
+## Empty offscreen bounds
+
+`offscreen_clipping.cpp` protects both ends of the actual raster framebuffer
+and submits triangles wholly outside each edge, in both field parities. Run
+with `HALF_WIDTH_BUFFERS=1` and `FIELD_BUFFERS=1` to cover the historical
+`(-1)/2 == 0` packed-slot overflow at `x == screenWidth`.
+
+Lit/perspective-capable painter builds can compare their normal output with
+`JET_FAST_SIMPLE_SPANS=0`, `JET_FAST_OPAQUE_UNLIT_SPANS=0` and
+`JET_SKIP_UNLIT_NORMALS=0`. These switches disable only the optional shortcuts;
+empty-bound rejection and independent additive source colours remain fixes in
+both implementations.

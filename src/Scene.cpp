@@ -1135,11 +1135,26 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
     // + 3 shifts per vertex plus the dot/clamp/square cycle from the
     // renderer's per-triangle path — replaced by a single 9-mul + 3-shift
     // light-direction transform amortized over the whole object.
+    // Emissive meshes have no consumer of normals or Lambert brightness.
+    // Custom shaders remain conservative: their inputs must be preserved.
+    bool unlitObject = !meshSource->triangles.empty();
+    for (const auto& triangle : meshSource->triangles) {
+        const Material* m = triangle.material;
+        if (!m || m->shader || (!m->emissive &&
+            m->shadingMode != ShadingMode::UNLIT &&
+            m->shadingMode != ShadingMode::WATER_REFLECT &&
+            m->shadingMode != ShadingMode::ADDITIVE)) {
+            unlitObject = false; break;
+        }
+    }
+#if defined(JET_SKIP_UNLIT_NORMALS) && !JET_SKIP_UNLIT_NORMALS
+    unlitObject = false;
+#endif
     bool objectLocalLight = false;
     Vector3 objLightDir = {0, 0, 0};
     uint16_t objLightIntensity = 0;
     uint8_t  objDiffuseCoef = 255;
-    if (directionalLight && !meshSource->triangles.empty()) {
+    if (directionalLight && !unlitObject && !meshSource->triangles.empty()) {
         bool allNonSpecular = true;
         // Per-triangle material walk. Cheap — a handful of byte loads
         // per face — and exits early on the first specular material we
@@ -1248,6 +1263,10 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
             dst.position.z = pos.z;
         }
 #if LIGHTING
+        if (unlitObject) {
+            dst.normal = {0,0,0}; dst.lambertBrightness = 0;
+            continue;
+        }
         Vector3 normal(srcVert.normal);
         // Normals use the combined ROTATION only — no translation. The
         // object-local-light path skips the transform entirely and shades
