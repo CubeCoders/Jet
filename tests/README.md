@@ -64,7 +64,7 @@ test (for this fixture, use `Z_BUFFERING=0`). For example:
 
 ```sh
 c++ -O2 -std=c++17 -I/path/to/config -I../src scene_texture_queue.cpp \
-  ../src/Scene.cpp ../src/Renderer.cpp ../src/BlendSpans.cpp ../src/Object.cpp ../src/Camera.cpp \
+  ../src/Scene.cpp ../src/Sprite2D.cpp ../src/Renderer.cpp ../src/BlendSpans.cpp ../src/Object.cpp ../src/Camera.cpp \
   ../src/TrigLUT.cpp ../src/Material.cpp ../src/Texture.cpp \
   ../src/Light.cpp ../src/PostFX.cpp -o scene_texture_queue
 ./scene_texture_queue
@@ -82,6 +82,14 @@ pixel for pixel. Build all translation units with the same Scene header;
 the private queue layout changes Scene's size.
 
 ## Display pixel expansion
+
+`fill_spans.cpp` checks constant RGB565 span fills for every halfword alignment,
+lengths from -1 through 480, scalar/vector tails, guard pixels and every RGB565
+colour. It includes `Renderer.cpp` to exercise its private fill helper: build
+with the scene fixture's source list above, omitting the separate `Renderer.cpp`
+entry. For S3 checks, temporarily include the test at the end of `Renderer.cpp`
+with `JET_FILL_SPANS_EMBEDDED` defined and call `runFillSpanChecks()` before
+starting rendering. Remove that test include from production firmware.
 
 `pixel_ops.cpp` checks every RGB565 value, all source/destination halfword
 alignments, empty/short spans, vector tails and output guard regions.
@@ -104,8 +112,9 @@ checks. Keep the harness out of the production build.
 triangle /256, sprite /255, sprite saturating add and triangle scaled add.
 It covers all channel pairs at every alpha, every halfword alignment,
 tails, colour keys, swapped destinations, solid/constant inputs, overlapping
-forward reads (including scaled framebuffer feedback) and scaled rows
-crossing the staging tile boundary.
+forward writes with forward/reverse source reads (including framebuffer
+feedback), and scaled/mirrored rows crossing the symmetry axis and staging
+tile boundary.
 
 ```sh
 c++ -O2 -std=c++17 -I/path/to/config -I../src blend_spans.cpp \
@@ -115,15 +124,16 @@ c++ -O2 -std=c++17 -I/path/to/config -I../src blend_spans.cpp \
 
 For S3 validation, define `JET_BLEND_SPANS_EMBEDDED`, compile the fixture
 into test firmware, and call `runBlendSpanChecks()` before rendering starts.
-The actual PIE code and desktop fallback each passed 15,313,664 pixel/guard
+The actual PIE code and desktop fallback each passed 23,730,432 pixel/guard
 checks. The embedded fixture also compares long-row performance against
 IRAM scalar loops specialized by blend mode and flags. Do not leave it in
 production firmware.
 
-`sprite_compositor.cpp` checks 6,048 full-width Scene renders against an
+`sprite_compositor.cpp` checks 96,768 full-width Scene renders against an
 independent compositor: negative/offscreen coordinates, clipping on all
 edges, scale 1–4, combined material/sprite alpha, keyed and solid sprites,
-additive blending, and registration in reverse z-order. Build it against
+additive blending, all 16 combinations of horizontal/vertical flips and
+mirrored halves, and registration in reverse z-order. Build it against
 Jet with the same full-width, non-interlaced configuration as the library,
 or the same source list as `scene_texture_queue.cpp` above.
 
@@ -147,6 +157,16 @@ Define `JET_TEST_POSITION_CACHE=1` when compiling `scene_texture_queue.cpp`
 to exercise cached/uncached positions and LODs, cache rebuilding after direct
 edits, Object copies and invalidation by geometry-changing helpers. Its
 fingerprint must still match the uncached baseline in every configuration.
+
+`position_reuse.cpp` compares cached and uncached rendering over 48 frames
+with duplicate positions carrying distinct normals and UVs, near/far clipping,
+object rotations, billboards and changing shading modes. It grows a mesh
+from 24 to 384 vertices and then shrinks it, exercising the S3 transform
+scratch allocator's size limit and larger-buffer fallback. Build it with the
+same source list as `scene_texture_queue.cpp`, and test full width, fields,
+lighting, perspective textures and textures disabled. For on-device checks,
+define `JET_POSITION_REUSE_EMBEDDED` and call `runPositionReuseChecks()` from
+temporary firmware. The fixture aligns its framebuffer for the S3 SIMD clear.
 
 ## Far-plane clipping
 

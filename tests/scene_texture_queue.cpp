@@ -29,7 +29,17 @@ static bool checkPositionCache() {
     mesh.calculateBoundingBox();
     if (mesh.cachedPositions()) return false;
     mesh.vertices.clear();
-    return mesh.cachePositions() && !mesh.cachedPositions();
+    if (!mesh.cachePositions() || mesh.cachedPositions() || mesh.cachedPositionSources()) return false;
+    for (int i=0; i<24; ++i) mesh.addVertex({{i%8, (i%8)*2, -(i%8)}});
+    if (!mesh.cachePositions() || !mesh.cachedPositionSources()) return false;
+    for (int i=0; i<24; ++i) if (mesh.cachedPositionSources()[i] != i%8) return false;
+    Object shared = mesh;
+    mesh.vertices[8].position.x = 100;
+    mesh.invalidatePositions();
+    if (mesh.cachedPositionSources() || !shared.cachedPositionSources()) return false;
+    if (!mesh.cachePositions() || mesh.cachedPositionSources()[8] != 8) return false;
+    mesh.vertices.push_back({{7,8,9}});
+    return !mesh.cachedPositions() && !mesh.cachedPositionSources();
 }
 #endif
 

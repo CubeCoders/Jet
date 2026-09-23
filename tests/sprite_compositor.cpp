@@ -11,12 +11,21 @@ void reference(std::vector<uint16_t>& pixels, const Sprite2D& sp) {
     const int alpha = sp.alpha * sp.material->alpha / 255;
     if (!alpha) return;
     const Texture* tex = sp.material->diffuseMap;
-    const int sw = tex ? tex->width : sp.width, sh = tex ? tex->height : sp.height;
+    const int sw = tex ? tex->width * ((sp.textureFlags & Sprite2D::MIRROR_X) ? 2 : 1) : sp.width;
+    const int sh = tex ? tex->height * ((sp.textureFlags & Sprite2D::MIRROR_Y) ? 2 : 1) : sp.height;
     const int w = sw * sp.scale, h = sh * sp.scale;
     for (int y = std::max(0, sp.y); y < std::min(height, sp.y + h); ++y)
         for (int x = std::max(0, sp.x); x < std::min(width, sp.x + w); ++x) {
-            const uint16_t s = tex ? tex->data[(((y - sp.y) * ((sh << 8) / h)) >> 8) * sw +
-                                                  (((x - sp.x) * ((sw << 8) / w)) >> 8)] : sp.material->color;
+            uint16_t s = sp.material->color;
+            if (tex) {
+                int tx = ((x - sp.x) * ((sw << 8) / w)) >> 8;
+                int ty = ((y - sp.y) * ((sh << 8) / h)) >> 8;
+                if (sp.textureFlags & Sprite2D::FLIP_X) tx = sw - 1 - tx;
+                if (sp.textureFlags & Sprite2D::FLIP_Y) ty = sh - 1 - ty;
+                if (tx >= tex->width) tx = sw - 1 - tx;
+                if (ty >= tex->height) ty = sh - 1 - ty;
+                s = tex->data[ty * tex->width + tx];
+            }
             if (tex && tex->hasAlpha && s == tex->alphaColor) continue;
             const uint16_t d = pixels[y * width + x];
             unsigned out = 0;
@@ -49,9 +58,11 @@ int main() {
     // Register in reverse order to verify the stable z-order pass as well.
     scene.addSprite(&sprite); scene.addSprite(&underlay);
     unsigned frames = 0;
+    for (int transform = 0; transform < 16; ++transform)
     for (int scale : {1, 2, 3, 4}) for (int x : {-151, -19, -1, 0, 7, 120, 145})
         for (int y : {-31, -1, 7, 39}) for (int kind = 0; kind < 3; ++kind)
             for (int alpha : {0, 127, 255}) for (int matAlpha : {0, 173, 255}) for (int add = 0; add < 2; ++add) {
+                sprite.textureFlags = (uint8_t)transform;
                 sprite.x = x; sprite.y = y; sprite.scale = scale; sprite.alpha = (uint8_t)alpha;
                 sprite.blendMode = add ? BlendMode::BLEND_ADD : BlendMode::BLEND_REPLACE;
                 material.alpha = (uint8_t)matAlpha; material.diffuseMap = kind ? &texture : nullptr;
@@ -61,8 +72,8 @@ int main() {
                 reference(expected, underlay); reference(expected, sprite);
                 scene.render();
                 if (actual != expected) {
-                    std::printf("Sprite mismatch: scale %d xy %d,%d kind %d alpha %d/%d add %d\n",
-                                scale, x, y, kind, alpha, matAlpha, add); return 1;
+                    std::printf("Sprite mismatch: transform %d scale %d xy %d,%d kind %d alpha %d/%d add %d\n",
+                                transform, scale, x, y, kind, alpha, matAlpha, add); return 1;
                 }
                 ++frames;
             }

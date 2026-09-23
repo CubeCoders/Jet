@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <new>
+#include <algorithm>
 #if defined(ESP_PLATFORM)
 #include "esp_heap_caps.h"
 #endif
@@ -36,6 +37,45 @@ namespace Renderer
         positionCache = std::shared_ptr<const Vector3>(positions,
             [](const Vector3* p) { std::free(const_cast<Vector3*>(p)); });
         positionCacheSize = vertices.size();
+        // Preserve the public one-position-per-vertex stream. A small map
+        // points duplicates at their earliest vertex, whose projection is
+        // already available when Scene reaches them. Do not merge normals/UVs.
+        const size_t count = vertices.size();
+        if (count >= 8 && count <= size_t(UINT16_MAX) + 1) {
+            auto allocateMap = [count]() -> uint16_t* {
+#if defined(ESP_PLATFORM) && defined(CONFIG_SPIRAM)
+                return static_cast<uint16_t*>(heap_caps_malloc(count * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+#else
+                return static_cast<uint16_t*>(std::malloc(count * sizeof(uint16_t)));
+#endif
+            };
+            uint16_t* order = allocateMap();
+            uint16_t* sources = allocateMap();
+            if (!order || !sources) { std::free(order); std::free(sources); return true; }
+            for (size_t i = 0; i < count; ++i) order[i] = (uint16_t)i;
+            std::sort(order, order + count, [positions](uint16_t a, uint16_t b) {
+                const Vector3 &pa = positions[a], &pb = positions[b];
+                if (pa.x != pb.x) return pa.x < pb.x;
+                if (pa.y != pb.y) return pa.y < pb.y;
+                if (pa.z != pb.z) return pa.z < pb.z;
+                return a < b;
+            });
+            size_t duplicates = 0;
+            uint16_t first = order[0];
+            for (size_t i = 0; i < count; ++i) {
+                const uint16_t index = order[i];
+                const Vector3 &p = positions[index], &q = positions[first];
+                if (p.x != q.x || p.y != q.y || p.z != q.z) first = index;
+                sources[index] = first;
+                duplicates += first != index;
+            }
+            std::free(order);
+            // Avoid an extra stream for meshes with little position reuse.
+            if (duplicates >= count / 4)
+                positionSources = std::shared_ptr<const uint16_t>(sources,
+                    [](const uint16_t* p) { std::free(const_cast<uint16_t*>(p)); });
+            else std::free(sources);
+        }
         return true;
     }
 

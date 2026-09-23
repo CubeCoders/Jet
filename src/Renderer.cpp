@@ -101,32 +101,22 @@ static inline void fillRGB565Span(uint16_t* framebuffer, int32_t bufferIndex, in
 
         const int32_t quads = pairs >> 2;
         if (quads > 0) {
+            // GCC will not form a hardware loop around inline asm. Keep the
+            // vector setup and explicit loop together, with no nested LOOP.
+            // Early-clobber keeps the advancing pointer distinct from inputs.
+            const int stride = 16;
             __asm__ volatile (
                 "ee.movi.32.q q0, %[v], 0\n\t"
                 "ee.movi.32.q q0, %[v], 1\n\t"
                 "ee.movi.32.q q0, %[v], 2\n\t"
                 "ee.movi.32.q q0, %[v], 3\n\t"
-                : : [v] "r"(color32)
+                "loopnez %[n], .Ljet_fill_end_%=\n\t"
+                "ee.vst.128.xp q0, %[p], %[s]\n\t"
+                ".Ljet_fill_end_%=:\n\t"
+                : [p] "+&r"(out)
+                : [s] "r"(stride), [n] "r"(quads), [v] "r"(color32)
+                : "memory"
             );
-            const int stride = 16;
-            // 4x-unrolled: one loop iteration retires 64 bytes. The asm
-            // blocks are volatile with a memory clobber, so GCC can't
-            // unroll them itself — do it by hand to amortise the branch.
-            for (int32_t i = quads >> 2; i > 0; --i) {
-                __asm__ volatile (
-                    "ee.vst.128.xp q0, %[p], %[s]\n\t"
-                    "ee.vst.128.xp q0, %[p], %[s]\n\t"
-                    "ee.vst.128.xp q0, %[p], %[s]\n\t"
-                    "ee.vst.128.xp q0, %[p], %[s]\n\t"
-                    : [p] "+r"(out) : [s] "r"(stride) : "memory"
-                );
-            }
-            for (int32_t i = quads & 3; i > 0; --i) {
-                __asm__ volatile (
-                    "ee.vst.128.xp q0, %[p], %[s]\n\t"
-                    : [p] "+r"(out) : [s] "r"(stride) : "memory"
-                );
-            }
             pairs -= quads << 2;
         }
     }

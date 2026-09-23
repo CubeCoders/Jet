@@ -71,11 +71,19 @@ public:
     /// Uses PSRAM on ESP builds with PSRAM; returns false if the position
     /// buffer cannot be allocated, leaving the ordinary vertex path active.
     /// Copies of an Object share the immutable cache until either invalidates it.
+    /// Repeated positions may also share projection work; UVs and normals
+    /// remain independent. Failure to allocate that optional map is harmless.
     bool cachePositions();
     const Vector3* cachedPositions() const {
         return positionCacheSize == vertices.size() ? positionCache.get() : nullptr;
     }
-    void invalidatePositions() { positionCache.reset(); positionCacheSize = 0; }
+    /// Optional earliest equal-position vertex indices, each <= its own index.
+    const uint16_t* cachedPositionSources() const {
+        return positionCacheSize == vertices.size() ? positionSources.get() : nullptr;
+    }
+    void invalidatePositions() {
+        positionCache.reset(); positionSources.reset(); positionCacheSize = 0;
+    }
 
     Vector3 boundingBoxMin = {0,0,0};   ///< Local-space AABB minimum (recomputed by calculateBoundingBox).
     Vector3 boundingBoxMax = {0,0,0};   ///< Local-space AABB maximum.
@@ -280,6 +288,7 @@ public:
                           const AmbientLight*     ambientLight);
 private:
     std::shared_ptr<const Vector3> positionCache;
+    std::shared_ptr<const uint16_t> positionSources;
     size_t positionCacheSize = 0;
 
 };

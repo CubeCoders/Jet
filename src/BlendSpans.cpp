@@ -284,31 +284,69 @@ void PERF_CRITICAL RGB565ConstantBlend::blend(uint16_t* dst, const uint16_t* src
     blendRGB565Span(dst, background ? src : nullptr, count, color, alpha,
         RGB565BlendMode::Alpha256, background ? BlendConstantBackground : 0);
 }
-void PERF_CRITICAL blendRGB565ScaledSpan(uint16_t* dst, const uint16_t* src, int count,
-                                        int sourceX256, int step256, uint8_t alpha,
-                                        RGB565BlendMode mode, uint8_t flags, uint16_t key) {
+namespace {
+template<bool Mirror>
+JET_BLEND_INLINE void scaledSpan(uint16_t* dst, const uint16_t* src, int count,
+                                int sourceX256, int step256, uint8_t alpha,
+                                RGB565BlendMode mode, uint8_t flags, uint16_t key,
+                                int sourceWidth = 0) {
     if (count <= 0) return;
-    const uintptr_t first = (uintptr_t)(src + (sourceX256 >> 8));
-    const uintptr_t last = (uintptr_t)(src +
-        (((int64_t)sourceX256 + (int64_t)(count - 1) * step256) >> 8) + 1);
+    int firstX = sourceX256 >> 8;
+    int lastX = (int)(((int64_t)sourceX256 + (int64_t)(count - 1) * step256) >> 8);
+    if constexpr (Mirror) {
+        // Conservative bounds also cover a span that crosses the symmetry
+        // axis. Framebuffer-backed textures must preserve write feedback.
+        firstX = 0;
+        lastX = sourceWidth - 1;
+    }
+    const uintptr_t first = (uintptr_t)(src + std::min(firstX, lastX));
+    const uintptr_t last = (uintptr_t)(src + std::max(firstX, lastX) + 1);
     if (first < (uintptr_t)(dst + count) && (uintptr_t)dst < last) {
-        // A texture can refer into the framebuffer. Staging would change
-        // feedback from earlier writes, so keep the original forward order.
-        for (int i = 0; i < count; ++i, sourceX256 += step256)
-            blendRGB565Span(dst + i, src + (sourceX256 >> 8), 1, 0, alpha, mode, flags, key);
+        for (int i = 0; i < count; ++i, sourceX256 += step256) {
+            int x = sourceX256 >> 8;
+            if constexpr (Mirror) {
+                if (x >= sourceWidth) x = 2 * sourceWidth - 1 - x;
+            }
+            blendRGB565Span(dst + i, src + x, 1, 0, alpha, mode, flags, key);
+        }
         return;
     }
-    // Stage only a small row fragment in internal stack RAM. Matching the
-    // destination phase makes every full vector load/store aligned, including
-    // sprites clipped at either screen edge. No full-size expanded texture.
+    // Stage a small row fragment in internal stack RAM. Matching the
+    // destination phase keeps full vector loads/stores aligned. Mirrored
+    // halves share the same tile to avoid two SIMD setups per row.
     alignas(16) uint16_t tile[128 + 8];
     while (count > 0) {
         const int n = std::min(count, 128);
         uint16_t* pixels = tile + (((uintptr_t)dst & 15) / 2);
-        for (int i = 0; i < n; ++i, sourceX256 += step256)
-            pixels[i] = src[sourceX256 >> 8];
+        if constexpr (Mirror) {
+            const int edge256 = sourceWidth << 8;
+            int forward = 0;
+            if (sourceX256 < edge256)
+                forward = step256 ? std::min(n, (edge256 - sourceX256 + step256 - 1) / step256) : n;
+            int x256 = sourceX256;
+            for (int i = 0; i < forward; ++i, x256 += step256)
+                pixels[i] = src[x256 >> 8];
+            x256 = 2 * edge256 - 1 - x256;
+            for (int i = forward; i < n; ++i, x256 -= step256)
+                pixels[i] = src[x256 >> 8];
+            sourceX256 += n * step256;
+        } else {
+            for (int i = 0; i < n; ++i, sourceX256 += step256)
+                pixels[i] = src[sourceX256 >> 8];
+        }
         blendRGB565Span(dst, pixels, n, 0, alpha, mode, flags, key);
         dst += n; count -= n;
     }
+}
+} // namespace
+void PERF_CRITICAL blendRGB565ScaledSpan(uint16_t* dst, const uint16_t* src, int count,
+                                        int sourceX256, int step256, uint8_t alpha,
+                                        RGB565BlendMode mode, uint8_t flags, uint16_t key) {
+    scaledSpan<false>(dst, src, count, sourceX256, step256, alpha, mode, flags, key);
+}
+void PERF_CRITICAL blendRGB565MirroredSpan(uint16_t* dst, const uint16_t* src, int sourceWidth,
+                                          int count, int sourceX256, int step256, uint8_t alpha,
+                                          RGB565BlendMode mode, uint8_t flags, uint16_t key) {
+    scaledSpan<true>(dst, src, count, sourceX256, step256, alpha, mode, flags, key, sourceWidth);
 }
 } // namespace Renderer

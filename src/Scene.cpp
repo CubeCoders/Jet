@@ -6,8 +6,42 @@
 #include <cstring> // For memset
 #include <algorithm> // For std::min, std::max
 #include <cmath> // For sqrtf (per-object distance fade / LOD pick)
+#include <cstdlib>
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+#include <esp_heap_caps.h>
+#include <new>
+#endif
 
 namespace Renderer {
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+// The transform scratch is frequently read back while emitting triangles.
+// Prefer internal RAM only for small allocations; retain malloc's normal
+// placement policy for larger meshes or if internal memory is unavailable.
+// The vector can briefly hold old and new buffers while growing.
+template<class T> struct TransformScratchAllocator {
+    using value_type = T;
+    using is_always_equal = std::true_type;
+    TransformScratchAllocator() = default;
+    template<class U> TransformScratchAllocator(const TransformScratchAllocator<U>&) {}
+    T* allocate(size_t count) {
+        void* p = count <= 4096 / sizeof(T)
+            ? heap_caps_malloc(count * sizeof(T), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) : nullptr;
+        if (!p) p = std::malloc(count * sizeof(T));
+        if (!p) {
+#if defined(__cpp_exceptions)
+            throw std::bad_alloc();
+#else
+            std::abort();
+#endif
+        }
+        return static_cast<T*>(p);
+    }
+    void deallocate(T* p, size_t) { std::free(p); }
+    template<class U> bool operator==(const TransformScratchAllocator<U>&) const { return true; }
+    template<class U> bool operator!=(const TransformScratchAllocator<U>&) const { return false; }
+};
+#endif
+
 
 // Static emissive material used to render triangles whose lighting has been
 // pre-baked into Triangle::bakedColor.  The colour field is overwritten
@@ -317,34 +351,20 @@ void Scene::reconstructCheckerboard() {
 static void jet_fill_u32x16(uint32_t* dest, uint32_t val, int n32) {
     const int n16 = n32 >> 2;
     if (n16 > 0) {
+        // One store per hardware-loop iteration; no scalar decrement/branch.
+        const int stride = 16;
         __asm__ volatile (
             "ee.movi.32.q q0, %[v], 0\n\t"
             "ee.movi.32.q q0, %[v], 1\n\t"
             "ee.movi.32.q q0, %[v], 2\n\t"
             "ee.movi.32.q q0, %[v], 3\n\t"
-            : : [v] "r"(val)
+            "loopnez %[n], .Ljet_clear_end_%=\n\t"
+            "ee.vst.128.xp q0, %[p], %[s]\n\t"
+            ".Ljet_clear_end_%=:\n\t"
+            : [p] "+&r"(dest)
+            : [s] "r"(stride), [n] "r"(n16), [v] "r"(val)
+            : "memory"
         );
-        // EE.VST.128.XP takes the post-increment stride as a register,
-        // not a bare immediate: as += stride_reg after each 128-bit store.
-        // 4x-unrolled: the volatile asm + memory clobber stops GCC from
-        // unrolling this itself, so retire 64 bytes per loop iteration by
-        // hand and mop up the remainder one store at a time.
-        const int stride = 16;
-        for (int i = n16 >> 2; i > 0; --i) {
-            __asm__ volatile (
-                "ee.vst.128.xp q0, %[p], %[s]\n\t"
-                "ee.vst.128.xp q0, %[p], %[s]\n\t"
-                "ee.vst.128.xp q0, %[p], %[s]\n\t"
-                "ee.vst.128.xp q0, %[p], %[s]\n\t"
-                : [p] "+r"(dest) : [s] "r"(stride) : "memory"
-            );
-        }
-        for (int i = n16 & 3; i > 0; --i) {
-            __asm__ volatile (
-                "ee.vst.128.xp q0, %[p], %[s]\n\t"
-                : [p] "+r"(dest) : [s] "r"(stride) : "memory"
-            );
-        }
     }
     for (int r = n32 & 3; r-- > 0; ) *dest++ = val;
 }
@@ -911,10 +931,10 @@ void Scene::drawSprites() {
 
         const Texture* tex = sp->material->diffuseMap;
 
-        // Clip dest rect to framebuffer bounds.
-        const int srcW = tex ? tex->width  : sp->width;
-        const int srcH = tex ? tex->height : sp->height;
-        if (srcW <= 0 || srcH <= 0) continue;
+        // Mirrored textures expose their expanded dimensions to clipping.
+        const int srcW = sp->sourceWidth();
+        const int srcH = sp->sourceHeight();
+        if (srcW <= 0 || srcH <= 0 || sp->scale <= 0) continue;
         const int dstW = srcW * sp->scale;
         const int dstH = srcH * sp->scale;
 
@@ -927,42 +947,10 @@ void Scene::drawSprites() {
         const int dy1 = (y1 > screenHeight) ? screenHeight : y1;
         if (dx0 >= dx1 || dy0 >= dy1) continue;
 
-        // Source start offsets for the unscaled (scale==1) path.
-        const int sx0 = dx0 - x0;
-        const int sy0 = dy0 - y0;
-
-        if (tex && sp->scale > 1) {
-            // ---- Nearest-neighbour upscale textured blit (scale > 1) ---------
-            // fp8 step: advances source coord by (1/scale) per output pixel.
-            const int xStep = (srcW << 8) / dstW;
-            const int yStep = (srcH << 8) / dstH;
-            const bool colorKey = tex->hasAlpha;
-            const uint16_t keyColor = tex->alphaColor;
-            const uint16_t* src = tex->data;
-            int sf_y = (dy0 - y0) * yStep;
-            for (int dy = dy0; dy < dy1; ++dy, sf_y += yStep) {
-                const int sy  = sf_y >> 8;   // nearest-neighbour: integer texel
-                uint16_t* dstRow = framebuffer + dy * screenWidth + dx0;
-                int sf_x = (dx0 - x0) * xStep;
-                const int w = dx1 - dx0;
-                blendRGB565ScaledSpan(dstRow, src + sy * srcW, w, sf_x, xStep,
-                    (uint8_t)combined,
-                    sp->blendMode == BlendMode::BLEND_ADD ? RGB565BlendMode::Add : RGB565BlendMode::Alpha255,
-                    colorKey ? BlendColorKey : 0, keyColor);
-            }
-        } else if (tex) {
-            // ---- Textured sprite blit ----------------------------------------
-            const bool colorKey = tex->hasAlpha;
-            const uint16_t keyColor = tex->alphaColor;
-            const uint16_t* src = tex->data;
-            for (int dy = dy0; dy < dy1; ++dy) {
-                const int sy = sy0 + (dy - dy0);
-                blendRGB565Span(framebuffer + dy * screenWidth + dx0,
-                    src + sy * tex->width + sx0, dx1 - dx0, 0, (uint8_t)combined,
-                    sp->blendMode == BlendMode::BLEND_ADD ? RGB565BlendMode::Add : RGB565BlendMode::Alpha255,
-                    colorKey ? BlendColorKey : 0, keyColor);
-            }
-            continue;
+        if (tex) {
+            for (int dy = dy0; dy < dy1; ++dy)
+                sp->blendTextureRow(framebuffer + dy * screenWidth + dx0,
+                    dx1 - dx0, dx0 - x0, dy - y0, (uint8_t)combined);
         } else {
             // ---- Solid rectangle fill ----------------------------------------
             const uint16_t col = sp->material->color;
@@ -1006,7 +994,11 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
     // (one render task), so plain static is fine here. PipelineVertex keeps
     // only transformed attributes; mesh UVs are fetched for visible textured
     // faces below. The loop writes every live field, with no upfront copy.
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+    static std::vector<PipelineVertex, TransformScratchAllocator<PipelineVertex>> transformedVertices;
+#else
     static std::vector<PipelineVertex> transformedVertices;
+#endif
     const size_t vertCount = meshSource->vertices.size();
     transformedVertices.resize(vertCount);
 
@@ -1232,10 +1224,20 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
 
     // Transform vertices and normals, writing only live projected attributes.
     const Vector3* packedPositions = meshSource->cachedPositions();
+    const uint16_t* positionSources = meshSource->cachedPositionSources();
     for (size_t vi = 0; vi < vertCount; ++vi) {
         const Object::Vertex& srcVert = meshSource->vertices[vi];
         PipelineVertex& dst = transformedVertices[vi];
-        const Vector3 pos = cameraPosition(packedPositions ? packedPositions[vi] : srcVert.position);
+        if (positionSources && positionSources[vi] != vi) {
+            dst.position = transformedVertices[positionSources[vi]].position;
+        } else {
+            const Vector3 pos = cameraPosition(packedPositions ? packedPositions[vi] : srcVert.position);
+            // Share one floating-point reciprocal across X and Y projection.
+            const float invZ = fovFactor / (float)pos.z;
+            dst.position.x = (int32_t)(pos.x * invZ) + screenWidth / 2;
+            dst.position.y = screenHeight / 2 - (int32_t)(pos.y * invZ);
+            dst.position.z = pos.z;
+        }
 #if LIGHTING
         Vector3 normal(srcVert.normal);
         // Normals use the combined ROTATION only — no translation. The
@@ -1249,14 +1251,6 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
                 (int32_t)(fnx * fM20 + fny * fM21 + fnz * fM22));
         }
 #endif
-
-        // Perspective projection — float fovFactor lets us use a reciprocal
-        // multiply instead of 64-bit integer divide, leveraging the hardware
-        // FPU on ESP32-S3/P4 (64-bit div is software-emulated on those cores).
-        const float invZ = fovFactor / (float)pos.z;
-        dst.position.x = (int32_t)(pos.x * invZ) + screenWidth / 2;
-        dst.position.y = screenHeight / 2 - (int32_t)(pos.y * invZ);
-        dst.position.z = pos.z;
 
 #if LIGHTING
         // Store transformed normal (only consumed by the lit shading paths).

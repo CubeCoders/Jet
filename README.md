@@ -88,6 +88,12 @@ fills, colour-key transparency, alpha and additive blending, integer upscaling,
 and `zOrder`-based draw order. On `HALF_WIDTH_BUFFERS` builds, sprites are
 composited at full output resolution during display scanout.
 
+Set `textureFlags` to `Sprite2D::FLIP_X` and/or `FLIP_Y` to flip an image.
+`MIRROR_X` and `MIRROR_Y` append reflected halves: combining both draws a
+32×32 top-left quarter as a symmetric 64×64 sprite, using one quarter of
+the texture storage. Mirroring preserves integer scaling and colour-key
+transparency without extra sprite instances.
+
 ### Particles
 
 `ParticleSystem` uses a fixed pool and renders through the rasteriser after
