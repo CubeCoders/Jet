@@ -30,6 +30,14 @@
 
 namespace Renderer {
 
+struct Sprite2D;
+/// Composite one full-resolution RGB565 output row. Sprites are painted in
+/// supplied order (back to front); no sorting, allocation or platform APIs.
+/// `line` contains `width` pixels at screen y. Set swapDestination for panel
+/// byte order. Sprite/material/texture storage must remain stable during use.
+void compositeSprites(uint16_t* line, int width, int y,
+                      Sprite2D* const* sprites, int count,
+                      bool swapDestination = false);
 
 /// @brief Screen-space 2D overlay registered with a Scene.
 struct Sprite2D {

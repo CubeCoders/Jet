@@ -108,6 +108,13 @@ checks. Keep the harness out of the production build.
 
 ## Alpha, water and sprite blending
 
+`sprite_scanline.cpp` checks the public `compositeSprites()` helper against an
+independent pixel reference for both native and byte-swapped output. It covers
+clipping, scaling, all texture transforms, alpha/additive blending, colour keys,
+invalid/disabled sprites and row guard pixels. Build with `Sprite2D.cpp`,
+`BlendSpans.cpp`, `Material.cpp` and `Texture.cpp` and an application config.
+Unlike the Scene fixture below, it also runs with half-width/field configs.
+
 `blend_spans.cpp` independently checks all four RGB565 blend equations:
 triangle /256, sprite /255, sprite saturating add and triangle scaled add.
 It covers all channel pairs at every alpha, every halfword alignment,

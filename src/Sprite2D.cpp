@@ -1,7 +1,34 @@
 #include "Sprite2D.hpp"
 #include "BlendSpans.hpp"
+#include <algorithm>
 
 namespace Renderer {
+void compositeSprites(uint16_t* line, int width, int y,
+                      Sprite2D* const* sprites, int count, bool swapDestination) {
+    if (!line || !sprites || width <= 0 || count <= 0) return;
+    for (int i = 0; i < count; ++i) {
+        const Sprite2D* sp = sprites[i];
+        if (!sp || !sp->enabled || !sp->material || sp->scale <= 0) continue;
+        const int alpha = sp->alpha * sp->material->alpha / 255;
+        const int sw = sp->sourceWidth(), sh = sp->sourceHeight();
+        if (!alpha || sw <= 0 || sh <= 0) continue;
+        const int64_t sy = int64_t(y) - sp->y;
+        if (sy < 0 || sy >= int64_t(sh) * sp->scale) continue;
+        const int left = sp->x < 0 ? 0 : sp->x;
+        const int64_t right = std::min<int64_t>(width, int64_t(sp->x) + int64_t(sw) * sp->scale);
+        if (left >= right) continue;
+        if (sp->material->diffuseMap) {
+            sp->blendTextureRow(line + left, int(right - left), left - sp->x,
+                                int(sy), uint8_t(alpha), swapDestination);
+        } else {
+            blendRGB565Span(line + left, nullptr, int(right - left), sp->material->color,
+                uint8_t(alpha), sp->blendMode == BlendMode::BLEND_ADD
+                    ? RGB565BlendMode::Add : RGB565BlendMode::Alpha255,
+                swapDestination ? BlendSwapDestination : 0);
+        }
+    }
+}
+
 void Sprite2D::blendTextureRow(uint16_t* dst, int count, int outputX, int outputY,
                                uint8_t combinedAlpha, bool swapDestination) const {
     const Texture& tex = *material->diffuseMap;

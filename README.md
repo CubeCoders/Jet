@@ -88,6 +88,13 @@ fills, colour-key transparency, alpha and additive blending, integer upscaling,
 and `zOrder`-based draw order. On `HALF_WIDTH_BUFFERS` builds, sprites are
 composited at full output resolution during display scanout.
 
+Display integrations can call `Renderer::compositeSprites(line, width, y,
+sprites, count, swapDestination)` from `Sprite2D.hpp` to blend one RGB565 output
+row. Pass `true` for byte-swapped panel buffers, or leave it `false` for native
+RGB565. The helper clips to the row width, allocates nothing and paints in the
+supplied order; sort by `zOrder` before scanout and keep sprite, material and
+texture storage stable until it finishes. It has no ESP32 dependencies.
+
 Set `textureFlags` to `Sprite2D::FLIP_X` and/or `FLIP_Y` to flip an image.
 `MIRROR_X` and `MIRROR_Y` append reflected halves: combining both draws a
 32×32 top-left quarter as a symmetric 64×64 sprite, using one quarter of
