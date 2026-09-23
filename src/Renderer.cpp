@@ -636,15 +636,9 @@ namespace Renderer
 #endif
 
 #if TEXTURE_MAPPING || !FAST_Z || LIGHTING
-        // Edge-function denominator. Computed in int64 (vertex projected
-        // x/y near the camera can blow well past int32 range), then
-        // narrowed to int32 for the per-pixel divides. Previously this
-        // path had an `if (denom64 > INT32_MAX) return false;` bail-out
-        // which silently dropped near-camera triangles at high resolutions
-        // / large WORLD_SCALE (triangles popping out of existence as you
-        // closed in). We now accept the truncation: the triangle is huge
-        // and near-camera so any per-pixel interpolation error is bounded
-        // and far less objectionable than the triangle disappearing.
+        // Keep the full edge-function denominator for depth, affine UVs and
+        // Gouraud stepping: near-clipped projected triangles may exceed int32.
+        // Legacy interpolation paths below also retain the narrowed denominator.
         int64_t denom64 = (int64_t)(v2.position.y - v3.position.y) * (v1.position.x - v3.position.x) +
                           (int64_t)(v3.position.x - v2.position.x) * (v1.position.y - v3.position.y);
 
@@ -653,11 +647,19 @@ namespace Renderer
         int32_t denom = (int32_t)denom64;
         if (denom == 0)
             return false; // Truncation landed on zero; treat as degenerate
-#if LIGHTING
+#if LIGHTING || !FAST_Z
         // Precompute FPU reciprocal once per triangle. Replaces two int64
         // __divdi3 calls (per-triangle Gouraud step + per-row brightness
         // init) with float multiplies — ~70 cy → ~5 cy each on Xtensa LX7.
         const float invDenom64f = 1.0f / (float)denom64;
+#endif
+
+#if !FAST_Z
+        // Large near-clipped triangles can overflow z * barycentric weight
+        // even when the area itself fits int32. Preserve the integer path for
+        // small faces, use the full-width weights and FPU for larger ones.
+        const int32_t maxVertexZ=std::max<int32_t>({v1.position.z,v2.position.z,v3.position.z,1});
+        const bool wideDepth = denom64 > INT32_MAX / maxVertexZ || denom64 < 0;
 #endif
 
 #if TEXTURE_MAPPING
@@ -884,6 +886,13 @@ namespace Renderer
         const int32_t dw0_dy_step = dw0_dy * inc;
         const int32_t dw1_dy_step = dw1_dy * inc;
         const int32_t dw2_dy_step = dw2_dy * inc;
+#if !FAST_Z
+        // Depth is an affine plane. Anchor once per row and step through large
+        // triangles, avoiding three int64-to-float conversions per pixel.
+        const float wideZStep = wideDepth
+            ? ((float)v1.position.z*dw0_dx_step + (float)v2.position.z*dw1_dx_step
+               + (float)v3.position.z*dw2_dx_step)*invDenom64f : 0.f;
+#endif
 
 #if TEXTURE_MAPPING
         if (incrementalUV) {
@@ -1182,6 +1191,8 @@ namespace Renderer
                 int32_t waterMirrorBufBase = 0;
                 uint8_t waterReflectAlpha = material->alpha;
                 bool waterSkyFallback = false;
+                uint8_t waterSceneAlpha = 255;
+                uint16_t waterSkyColor = 0;
                 if (isWaterReflect)
                 {
                     // `specular` expresses ripple amplitude in pixels at a
@@ -1216,6 +1227,18 @@ namespace Renderer
                     waterSkyFallback = mirrorY < 0 &&
                                        gradientColors != nullptr &&
                                        gradientSize > 0;
+                    if (gradientColors && gradientSize > 0) {
+                        waterSkyColor = gradientColors[0];
+                        if (material->waterReflectionMaxY >= 0 && !waterSkyFallback) {
+                            // The sky uses the unshifted horizon. Scene reflections may
+                            // be shifted to a local shoreline, but must not sample water.
+                            const int skyRow = std::clamp(2*wl-y+ripple,0,gradientSize-1);
+                            waterSkyColor = gradientColors[skyRow];
+                            waterSceneAlpha = uint8_t(std::clamp(
+                                (int(material->waterReflectionMaxY)-mirrorY)*255/24,0,255));
+                            if (!waterSceneAlpha) waterSkyFallback = true;
+                        }
+                    }
                     if (mirrorY < 0)             mirrorY = 0;
                     if (mirrorY >= screenHeight) mirrorY = screenHeight - 1;
                     constexpr int kSsrTopFadePx = 32;
@@ -1309,11 +1332,15 @@ namespace Renderer
                     // mirrorIdx steps in x-lockstep with bufferIndex.
                     const uint16_t* srcBuf = reflectBuffer ? reflectBuffer : framebuffer;
                     int32_t mirrorIdx = waterMirrorBufBase + xStart / 2;
-                    const uint16_t skyCol = waterSkyFallback ? gradientColors[0] : 0;
+                    const uint16_t skyCol = waterSkyColor;
                     const int spanCount = ((xEnd - xStart) >> 1) + 1;
                     if (waterSkyFallback) {
                         fillRGB565Span(framebuffer, bufferIndex, spanCount,
                             blendRGB565(material->color, skyCol, waterReflectAlpha));
+                    } else if (waterSceneAlpha < 255) {
+                        for (int i=0;i<spanCount;++i)
+                            framebuffer[bufferIndex+i] = blendRGB565(material->color,
+                                blendRGB565(waterSkyColor,srcBuf[mirrorIdx+i],waterSceneAlpha),waterReflectAlpha);
                     } else if (spanCount < 32) {
                         for (int i = 0; i < spanCount; ++i)
                             framebuffer[bufferIndex + i] = blendRGB565(material->color,
@@ -1428,6 +1455,14 @@ namespace Renderer
                     else textureSpan(std::true_type{});
                 } else {
 #endif
+#if !FAST_Z
+                float wideZ = wideDepth
+                    ? ((float)v1.position.z*(float)ew0 + (float)v2.position.z*(float)ew1
+                       + (float)v3.position.z*(float)ew2)*invDenom64f : 0.f;
+    #define JET_DEPTH_STEP , wideZ += wideZStep
+#else
+    #define JET_DEPTH_STEP
+#endif
     // Per-pixel brightness step appended to the for-loop header below. The
     // step has to happen unconditionally per pixel (continues elsewhere in
     // the loop body would otherwise desync the running value), so it lives
@@ -1444,7 +1479,7 @@ namespace Renderer
                 int32_t bufferIndex = y * (screenWidth / 2) + (xStart / 2);
     #endif
             for (int x = xStart; x <= xEnd;
-                 x += 2, ew0 += dw0_dx_step, ew1 += dw1_dx_step, ew2 += dw2_dx_step, bufferIndex++ JET_LIT_STEP JET_UV_STEP)
+                 x += 2, ew0 += dw0_dx_step, ew1 += dw1_dx_step, ew2 += dw2_dx_step, bufferIndex++ JET_LIT_STEP JET_UV_STEP JET_DEPTH_STEP)
                 {
     #else
     #if FIELD_BUFFERS
@@ -1453,7 +1488,7 @@ namespace Renderer
                 int32_t bufferIndex = y * screenWidth + xStart;
     #endif
             for (int x = xStart; x <= xEnd;
-                 x++, ew0 += dw0_dx_step, ew1 += dw1_dx_step, ew2 += dw2_dx_step, bufferIndex++ JET_LIT_STEP JET_UV_STEP)
+                 x++, ew0 += dw0_dx_step, ew1 += dw1_dx_step, ew2 += dw2_dx_step, bufferIndex++ JET_LIT_STEP JET_UV_STEP JET_DEPTH_STEP)
                 {
     #endif
                 // Z-buffer index. Stride matches the configured depth-buffer
@@ -1504,7 +1539,9 @@ namespace Renderer
     // Pixel is inside the triangle - render it
     // Interpolate z, u, v
     #if !FAST_Z
-                    int32_t z = (v1.position.z * w0 + v2.position.z * w1 + v3.position.z * w2) / denom;
+                    int32_t z = wideDepth
+                        ? int32_t(wideZ)
+                        : (v1.position.z*w0 + v2.position.z*w1 + v3.position.z*w2) / denom;
 
                     if (z < nearPlane || z > farPlane)
                     {
@@ -1857,7 +1894,7 @@ namespace Renderer
                     const uint16_t* srcBuf = reflectBuffer ? reflectBuffer : framebuffer;
                     uint16_t reflCol;
                     if (waterSkyFallback && gradientColors != nullptr && gradientSize > 0) {
-                        reflCol = gradientColors[0];
+                        reflCol = waterSkyColor;
                     } else {
     #if HALF_WIDTH_BUFFERS
                         reflCol = srcBuf[waterMirrorBufBase + (x >> 1)];
@@ -1865,6 +1902,8 @@ namespace Renderer
                         reflCol = srcBuf[waterMirrorBufBase + x];
     #endif
                     }
+                    if (!waterSkyFallback && waterSceneAlpha < 255)
+                        reflCol = blendRGB565(waterSkyColor,reflCol,waterSceneAlpha);
                     color = blendRGB565(material->color, reflCol, waterReflectAlpha);
                     // SSR already composited the final pixel; bypass the
                     // standard pixAlpha re-blend below or we get a double-blend
@@ -1915,6 +1954,7 @@ namespace Renderer
     #endif // !JET_FAST_SIMPLE_SPANS || TEXTURE_MAPPING
     #undef JET_LIT_STEP
     #undef JET_UV_STEP
+    #undef JET_DEPTH_STEP
             }
         };
         if (spans.valid) rasterRows(std::true_type{});

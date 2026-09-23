@@ -209,3 +209,13 @@ filtering, analytic affine/perspective reference texels, bilinear interpolation,
 palette safety and framebuffer guards. Build with TEXTURE_MAPPING=1 and each
 combination of PERSPECTIVE_CORRECT_TEXTURES/BILINEAR_FILTER to verify disabled
 capabilities remain disabled. Match the test and library configurations.
+
+`wide_depth.cpp` checks large projected triangles against a 64-bit depth
+reference (within one integer depth unit), both parities and guard storage.
+Requires Z_BUFFERING=1, FAST_Z=0. It covers overflow in depth-weight products
+and triangles whose area exceeds int32.
+
+`water_reflection.cpp` verifies the optional scene-reflection source-row cutoff:
+excluded rows cannot influence output, valid rows still reflect, and disabling
+the cutoff restores unrestricted sampling. Run with both the simple span path
+and the general depth/lighting paths. The cutoff requires a sky gradient.

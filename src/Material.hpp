@@ -39,10 +39,11 @@ public:
     uint8_t specularExponent = 0; ///< PHONG only: 0 keeps the legacy broad highlight;
                                   ///< 1..255 enables additive Blinn-Phong gloss (try 32).
                                   ///< Uses a fixed view direction and a per-triangle half-vector.
-    uint8_t waterYBias = 0;     ///< WATER_REFLECT only: pixels to subtract from the mirror-row index,
-                                ///<   biasing the reflection axis upward to align with the true
-                                ///<   waterline. Stored in device-native pixels (no resolution scaling).
-                                ///<   Set via WaterSurface::setReflectionMode(alpha, rippleAmp, yBias).
+    uint8_t waterYBias = 0;     ///< WATER_REFLECT: added to the sampled mirror row; positive moves
+                                ///< the reflected image downward by this many output pixels.
+    int16_t waterReflectionMaxY = -1; ///< Optional last source row for scene reflections (-1 disables).
+                                      ///< Fade to reflected sky over the preceding 24 pixels, preventing
+                                      ///< shifted reflections from feeding water back into itself. Requires a sky gradient.
     ShadingMode shadingMode = ShadingMode::FLAT; ///< Shading model.
     char* name;                 ///< Optional name; used for `usemtl` matching in OBJ loading.
 
