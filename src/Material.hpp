@@ -34,6 +34,9 @@ public:
     uint8_t alpha;              ///< Per-material alpha (0=invisible, 255=opaque).
     uint8_t diffuse;            ///< Diffuse reflectance coefficient (0..255).
     uint8_t specular;           ///< Specular reflectance coefficient (0..255).
+    uint8_t specularExponent = 0; ///< PHONG only: 0 keeps the legacy broad highlight;
+                                  ///< 1..255 enables additive Blinn-Phong gloss (try 32).
+                                  ///< Uses a fixed view direction and a per-triangle half-vector.
     uint8_t waterYBias = 0;     ///< WATER_REFLECT only: pixels to subtract from the mirror-row index,
                                 ///<   biasing the reflection axis upward to align with the true
                                 ///<   waterline. Stored in device-native pixels (no resolution scaling).

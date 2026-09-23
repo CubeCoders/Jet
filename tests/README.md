@@ -182,3 +182,23 @@ visible area when their average depth is beyond the far plane. It covers
 crossings of both Z planes, reversed winding and fully distant geometry.
 Build it with the same Scene sources as `scene_texture_queue.cpp`, with
 `HALF_WIDTH_BUFFERS=0` and `FIELD_BUFFERS=0`, and keep assertions enabled.
+
+
+## Depth, square roots and gloss
+
+`depth_buffer.cpp` requires `Z_BUFFERING=1`, `FAST_Z=0`. It checks full-height
+depth-row clearing, X addressing, crossing depth slopes in both draw orders,
+and allocation guards. Run with half-width field buffers and both full-frame
+width layouts. Compile against the same configuration as the Jet library.
+
+`sqrt.cpp` checks the exact small-input floor square root against the original
+double implementation over normal magnitudes, square boundaries and random
+32/64-bit values. `specular.cpp` checks the optional PHONG gloss lobe against a
+floating-point power reference, intensity/colour handling and RGB565 saturation.
+Both can be built as standalone C++17 executables with `src` and the frontend's
+`JetConfig.hpp` on the include path; keep assertions enabled.
+
+`depth_sort.cpp` requires `Z_BUFFERING=1` and
+`JET_DEPTH_SORT_OPAQUE_FRONT_TO_BACK=1`. It checks 24 object submission orders
+with opaque occlusion, blended faces, no-depth-write backgrounds and depth-
+ignoring overlays. Build with the Scene sources and matching frontend config.

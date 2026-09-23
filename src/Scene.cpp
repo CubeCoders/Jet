@@ -14,6 +14,9 @@
 
 namespace Renderer {
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
+#ifndef JET_S3_TRANSFORM_INTERNAL_BYTES
+#define JET_S3_TRANSFORM_INTERNAL_BYTES 4096
+#endif
 // The transform scratch is frequently read back while emitting triangles.
 // Prefer internal RAM only for small allocations; retain malloc's normal
 // placement policy for larger meshes or if internal memory is unavailable.
@@ -24,7 +27,7 @@ template<class T> struct TransformScratchAllocator {
     TransformScratchAllocator() = default;
     template<class U> TransformScratchAllocator(const TransformScratchAllocator<U>&) {}
     T* allocate(size_t count) {
-        void* p = count <= 4096 / sizeof(T)
+        void* p = count <= JET_S3_TRANSFORM_INTERNAL_BYTES / sizeof(T)
             ? heap_caps_malloc(count * sizeof(T), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) : nullptr;
         if (!p) p = std::malloc(count * sizeof(T));
         if (!p) {
@@ -439,7 +442,8 @@ void PERF_CRITICAL Scene::clearBuffers() {
 #endif
                 #if Z_BUFFERING
                 #if HALF_WIDTH_BUFFERS
-                memset(zBuffer + (y / 2) * (screenWidth / 2), 0xFF, (screenWidth / 2) * sizeof(uint16_t));
+                // Depth rows always use full screen Y, even with packed colour fields.
+                memset(zBuffer + y * ZBUFFER_STRIDE(screenWidth), 0xFF, ZBUFFER_STRIDE(screenWidth) * sizeof(uint16_t));
                 #else
                 memset(zBuffer + y * screenWidth, 0xFF, screenWidth * sizeof(uint16_t));
                 #endif
@@ -752,7 +756,10 @@ void Scene::prepareFrame() {
     lastFrameDrawnObjects   = drawnObjs;
     lastFrameDrawnTriangles = static_cast<int>(renderQueue.size());
 
-    // 3) Global painter's sort. Three bands:
+    // 3) Global painter's sort. With JET_DEPTH_SORT_OPAQUE_FRONT_TO_BACK
+    // and depth testing, split the normal band into near-to-far opaque and
+    // far-to-near blended geometry, allowing early depth rejection. Default:
+    // Three bands:
     //      0. noWriteZBuffer  — drawn first, so later geometry paints over
     //                           them (e.g. skyboxes).
     //      1. Normal          — main scene, back-to-front by effective Z.
@@ -1434,19 +1441,28 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
         rt.sourceTriangleIndex = srcTriIdx;
 #endif
         renderQueue.push_back(rt);
-        // Preserve the old stable 64-bucket ordering exactly, including
+        // Default: preserve the stable 64-bucket ordering, including
         // noWriteZBuffer taking precedence when both special flags are set.
         uint8_t bucket = 0;
         if (!noWriteZBuffer) {
             bucket = SortBucketCount - 1;
             if (!ignoreZBuffer) {
                 constexpr int32_t zBiasScale = 256;
-                constexpr int K = SortBucketCount - 2;
+                constexpr int K = 64;
                 const int32_t key = avgZ - static_cast<int32_t>(obj->zBias) * zBiasScale;
                 const int32_t range = std::max<int32_t>(camera->farPlane - camera->nearPlane, 1);
                 int b = static_cast<int>((static_cast<int64_t>(key - camera->nearPlane) * K) / range);
                 b = std::max(0, std::min(b, K - 1));
+#if Z_BUFFERING && defined(JET_DEPTH_SORT_OPAQUE_FRONT_TO_BACK) && JET_DEPTH_SORT_OPAQUE_FRONT_TO_BACK
+                const bool opaque = !DEPTH_ALPHA_BLEND && mat && mat->alpha == 255
+                    && objAlpha == 255 && !mat->shader
+                    && mat->shadingMode != ShadingMode::ADDITIVE
+                    && mat->shadingMode != ShadingMode::WATER_REFLECT
+                    && mat->shadingMode != ShadingMode::WIREFRAME;
+                bucket = static_cast<uint8_t>(opaque ? 1 + b : K + K - b);
+#else
                 bucket = static_cast<uint8_t>(K - b);
+#endif
             }
         }
         renderBuckets.push_back(bucket);

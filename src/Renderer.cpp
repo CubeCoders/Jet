@@ -1,4 +1,5 @@
 #include "Renderer.hpp"
+#include "Specular.hpp"
 #include <algorithm>
 #include <cmath>
 #include "TrigLUT.hpp"
@@ -162,7 +163,8 @@ static inline uint16_t jetShadeBrightness(const Vector3& N, const Vector3& L,
                                           uint16_t lightIntensity,
                                           uint8_t diffuseCoef,
                                           uint8_t specularCoef,
-                                          uint16_t lambertGainQ8 = 256)
+                                          uint16_t lambertGainQ8 = 256,
+                                          int64_t* normalDotLight = nullptr)
 {
     if (lightIntensity > 255) lightIntensity = 255;
     const uint32_t maxBrightness = 255u + specularCoef;
@@ -170,6 +172,7 @@ static inline uint16_t jetShadeBrightness(const Vector3& N, const Vector3& L,
     // Lambertian diffuse term. L points toward the light source, so a
     // positive dot product means the surface faces the light.
     int64_t lit = Vector3::dotProduct(N, L);
+    if (normalDotLight) *normalDotLight = lit;
     if (lit <= 0) return 0;
 
     // Map [0, FPS²] → [0, 255]. With FPS=1024, FPS²=1,048,576, so >>12
@@ -511,6 +514,15 @@ namespace Renderer
         const uint8_t ambG = ambientLight ? ambientLight->color.g : 0;
         const uint8_t ambB = ambientLight ? ambientLight->color.b : 0;
         const uint16_t lightIntensity = directionalLight ? directionalLight->intensity : 0;
+        const bool glossyPhong = !emissive && directionalLight && material->specularExponent
+            && material->specular && material->shadingMode == ShadingMode::PHONG;
+        Vector3 specularHalf;
+        if (glossyPhong) {
+            specularHalf = directionalLight->lightDir;
+            specularHalf.z -= FIXED_POINT_SCALE;
+            const auto length = specularHalf.length();
+            if (length > 0) specularHalf = (specularHalf * FIXED_POINT_SCALE) / length;
+        }
 
         if (directionalLight)
         {
@@ -1448,7 +1460,7 @@ namespace Renderer
                 // HALF_WIDTH_BUFFERS is on, otherwise per-pixel (same stride
                 // as the colour buffer). Set per-row.
                 #if Z_BUFFERING
-                int32_t zBufferIndex = y * ZBUFFER_STRIDE(screenWidth);
+                int32_t zBufferIndex = y * ZBUFFER_STRIDE(screenWidth) + (HALF_WIDTH_BUFFERS ? x / 2 : x);
                 #endif
 
                     #if Z_BUFFERING
@@ -1667,6 +1679,9 @@ namespace Renderer
                     #endif
                     continue;
     #else
+    #if LIGHTING
+                    uint16_t gloss = 0;
+    #endif
     #if LIGHTING || Z_BRIGHTNESS
                     if (directionalLight)
                     {
@@ -1733,12 +1748,16 @@ namespace Renderer
                                 pixelNormal = (pixelNormal * static_cast<int32_t>(FIXED_POINT_SCALE)) / normalLength;
                             }
 
+                            int64_t normalDotLight;
                             brightness = jetShadeBrightness(
                                 pixelNormal,
                                 directionalLight->lightDir,
                                 lightIntensity,
                                 material->diffuse,
-                                material->specular);
+                                glossyPhong ? 0 : material->specular, 256, &normalDotLight);
+                            if (glossyPhong && normalDotLight > 0)
+                                gloss = detail::phongSpecular(pixelNormal, specularHalf,
+                                    material->specularExponent, material->specular, lightIntensity);
                         }
                     }
     #endif
@@ -1818,6 +1837,10 @@ namespace Renderer
                         }
     #endif
                     }
+    #if LIGHTING
+                    if (gloss)
+                        color = detail::addSpecular(color, gloss, directionalLight->color);
+    #endif
     #endif
     #endif
 

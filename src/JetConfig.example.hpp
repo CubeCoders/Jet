@@ -258,3 +258,16 @@
 #if defined(ESP_PLATFORM)
 #define ESP32
 #endif
+
+
+// Optional S3 transform-scratch internal-RAM preference, in bytes. The default
+// 4 KiB suits small meshes; a frontend with memory headroom may raise it (e.g.
+// 32 KiB for an 822-vertex lit mesh). Larger allocations or failed internal
+// allocations retain malloc placement. Vector growth may hold two buffers.
+// #define JET_S3_TRANSFORM_INTERNAL_BYTES 32768
+
+// Optional with Z_BUFFERING: order opaque depth-writing triangles near-to-far
+// to skip shading hidden pixels. Blended/faded/effect faces retain far-to-near
+// ordering in a later band; backgrounds and overlays keep their special bands.
+// Default 0 retains the original painter ordering. Equal-depth ties can change.
+// #define JET_DEPTH_SORT_OPAQUE_FRONT_TO_BACK 1

@@ -34,10 +34,20 @@ namespace FastMath
 
     inline int64_t PERF_CRITICAL approximateSqrt(int64_t value)
     {
-        // Delegated to std::sqrt; the FPU on every target Jet runs on (Xtensa LX7,
-        // ARM Cortex-M/A, x86) makes this a single instruction — no slower than the
-        // previous single-Newton-step approximation, and actually correct.
         if (value <= 0) return 0;
+        if (static_cast<uint64_t>(value) <= UINT32_MAX) {
+            // ESP32-S3 has single-precision floating point; double sqrt uses
+            // software helpers. Float supplies a close candidate, then integer
+            // checks recover exactly floor(sqrt(value)), including rounding at
+            // perfect squares and UINT32_MAX. Normal vectors use this path.
+            const uint32_t input = static_cast<uint32_t>(value);
+            uint32_t root = static_cast<uint32_t>(std::sqrt(static_cast<float>(input)));
+            if (root >= 65536u) return 65535;
+            if (root * root > input) --root;
+            else if (root < 65535u && (root + 1) * (root + 1) <= input) ++root;
+            return root;
+        }
+        // Preserve the existing wide-input behaviour outside the fast path.
         return static_cast<int64_t>(std::sqrt(static_cast<double>(value)));
     }
 

@@ -90,7 +90,7 @@ public:
 
     /// @brief Phase 2 of split rendering: rasterise the sorted render queue for
     ///        rows [yMin, yMax) only. Uses a thread-local copy of the rasteriser so
-    ///        concurrent calls with non-overlapping y ranges are safe when Z_BUFFERING==0.
+    ///        concurrent calls with non-overlapping y ranges use disjoint colour and depth rows.
     ///
     ///        May be called from multiple threads simultaneously with disjoint bands.
     // Parallel callers supply separate zeroed flags (lastFrameDrawnTriangles
@@ -256,7 +256,13 @@ private:
     std::vector<RenderTri> renderQueue;
     // One byte per triangle: background, 64 far-to-near depth buckets,
     // then overlay. Sorting never needs to fetch the full triangle payload.
+#if Z_BUFFERING && defined(JET_DEPTH_SORT_OPAQUE_FRONT_TO_BACK) && JET_DEPTH_SORT_OPAQUE_FRONT_TO_BACK
+    // Background, 64 near-to-far opaque buckets, 64 far-to-near blended
+    // buckets, overlays. All keys still fit one byte.
+    static constexpr int SortBucketCount = 130;
+#else
     static constexpr int SortBucketCount = 66;
+#endif
     std::vector<uint8_t> renderBuckets;
     // Painter's-sort output as indices into renderQueue, rebuilt by
     // prepareFrame() each frame. Sorting (scattering) 4-byte indices
