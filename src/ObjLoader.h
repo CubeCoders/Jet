@@ -1,7 +1,11 @@
+#pragma once
 #include "Object.hpp"
 #include "Material.hpp"
 #include <cstdio>
 #include <cstring>
+#include <array>
+#include <map>
+#include <algorithm>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-function"
@@ -67,7 +71,7 @@ using namespace Renderer;
             if (line[0] == 'n' && line[1] == 'e')
             {
                 char materialName[256];
-                sscanf(line, "newmtl %s", materialName);
+                if (sscanf(line, "newmtl %255s", materialName) != 1) break;
                 currentMaterial = new Material();
                 currentMaterial->name = strdup(materialName);  // Use strdup to allocate memory for the name
                 materialLibrary->push_back(currentMaterial);
@@ -77,44 +81,33 @@ using namespace Renderer;
             {
                 if (line[0] == 'K' && line[1] == 'd')
                 {
-                    float r, g, b;
+                    float r=1, g=1, b=1;
                     sscanf(line, "Kd %f %f %f", &r, &g, &b);
+                    r=std::clamp(r,0.f,1.f);g=std::clamp(g,0.f,1.f);b=std::clamp(b,0.f,1.f);
                     uint8_t rInt = static_cast<uint8_t>(r * 255);
                     uint8_t gInt = static_cast<uint8_t>(g * 255);
                     uint8_t bInt = static_cast<uint8_t>(b * 255);
-                    currentMaterial->color = rInt << 11 | gInt << 5 | bInt;
+                    currentMaterial->color = (rInt >> 3) << 11 | (gInt >> 2) << 5 | (bInt >> 3);
                 }
                 else if (line[0] == 'd')
                 {
-                    float alpha;
+                    float alpha=1;
                     sscanf(line, "d %f", &alpha);
+                    alpha=std::clamp(alpha,0.f,1.f);
                     currentMaterial->alpha = static_cast<uint8_t>(alpha * 255);
                 }
-                else if (line[0] == 'm' && line[1] == 'a')
+                else if (std::strncmp(line,"map_Kd ",7)==0)
                 {
-                    if (textureLibrary == nullptr)
-                    {
-                        printf("Warning: Texture library not provided, ignoring texture\n");
-                        continue;
-                    }
-                    char textureName[256];
-                    sscanf(line, "map_Kd %s", textureName);
-                    // Find a texture with the given name in the library - if none exists, create it and add it
-                    bool found = false;
-                    for (auto texture : *textureLibrary)
-                    {
-                        if (strcmp(texture->name, textureName) == 0)
-                        {
-                            currentMaterial->diffuseMap = texture;
-                            found = true;
-                            break;
+                    // Names may contain spaces. Unresolved maps retain the
+                    // material colour instead of creating a null pixel texture.
+                    char textureName[256]={};
+                    if (sscanf(line,"map_Kd %255[^\r\n]",textureName)==1 && textureLibrary) {
+                        for(auto* texture : *textureLibrary) {
+                            if(texture && texture->name && std::strcmp(texture->name,textureName)==0) {
+                                currentMaterial->diffuseMap=texture;
+                                break;
+                            }
                         }
-                    }
-                    if (!found)
-                    {
-                        Texture *newTexture = new Texture(0, 0, nullptr, false, 0, false, TextureAddressMode::WRAP);
-                        textureLibrary->push_back(newTexture);
-                        currentMaterial->diffuseMap = newTexture;
                     }
                 }
             }
@@ -142,6 +135,7 @@ using namespace Renderer;
         std::vector<float> tempVertices;
         std::vector<float> tempUVs;
         std::vector<float> tempNormals;
+        std::map<std::array<int,3>,uint16_t> vertexLookup;
         Material *currentMaterial = defaultMaterial;
 
         const float SCALE = (FIXED_POINT_SCALE / 8) * scale;
@@ -154,7 +148,7 @@ using namespace Renderer;
                 currentMaterial = defaultMaterial;
             }
             //Custom: "mt <16-bit hex> <optional 0-255 alpha, default 255>" for material set
-            else if (line[0] == 'm' && line[1] == 't')
+            else if (line[0] == 'm' && line[1] == 't' && line[2] == ' ')
             {
                 uint16_t color;
                 uint8_t alpha = 255;
@@ -165,7 +159,7 @@ using namespace Renderer;
             else if (line[0] == 'u' && line[1] == 's')
             {
                 char materialName[256];
-                sscanf(line, "usemtl %s", materialName);
+                if (sscanf(line, "usemtl %255s", materialName) != 1) break;
                 if (materialLibrary == nullptr)
                 {
                     printf("Warning: Material library not provided, ignoring material\n");
@@ -264,35 +258,31 @@ using namespace Renderer;
                     return vert;
                 };
 
-                // Handle triangle
-                if (numVertices == 3) {
-                    Object::Vertex vert1 = createVertex(vertices[0][0], vertices[0][1], vertices[0][2]);
-                    Object::Vertex vert2 = createVertex(vertices[1][0], vertices[1][1], vertices[1][2]);
-                    Object::Vertex vert3 = createVertex(vertices[2][0], vertices[2][1], vertices[2][2]);
-
-                    obj->addVertex(vert1);
-                    obj->addVertex(vert2);
-                    obj->addVertex(vert3);
-                    obj->addTriangle(obj->vertices.size() - 3, obj->vertices.size() - 2, obj->vertices.size() - 1, currentMaterial);
-                }
-                // Handle quad by splitting into two triangles
-                else if (numVertices == 4) {
-                    Object::Vertex vert1 = createVertex(vertices[0][0], vertices[0][1], vertices[0][2]);
-                    Object::Vertex vert2 = createVertex(vertices[1][0], vertices[1][1], vertices[1][2]);
-                    Object::Vertex vert3 = createVertex(vertices[2][0], vertices[2][1], vertices[2][2]);
-                    Object::Vertex vert4 = createVertex(vertices[3][0], vertices[3][1], vertices[3][2]);
-
-                    // First triangle (0,1,2)
-                    obj->addVertex(vert1);
-                    obj->addVertex(vert2);
-                    obj->addVertex(vert3);
-                    obj->addTriangle(obj->vertices.size() - 3, obj->vertices.size() - 2, obj->vertices.size() - 1, currentMaterial);
-
-                    // Second triangle (0,2,3)
-                    obj->addVertex(vert1);
-                    obj->addVertex(vert3);
-                    obj->addVertex(vert4);
-                    obj->addTriangle(obj->vertices.size() - 3, obj->vertices.size() - 2, obj->vertices.size() - 1, currentMaterial);
+                if (numVertices >= 3) {
+                    bool valid=true;
+                    for(int i=0;i<numVertices;++i) {
+                        const int v=vertices[i][0],t=vertices[i][1],n=vertices[i][2];
+                        valid &= v>0 && size_t(v)<=tempVertices.size()/3 &&
+                            t>0 && size_t(t)<=tempUVs.size()/2 && n>0 && size_t(n)<=tempNormals.size()/3;
+                    }
+                    if(valid) {
+                        uint16_t face[4];
+                        for(int i=0;i<numVertices;++i) {
+                            const std::array<int,3> key{vertices[i][0],vertices[i][1],vertices[i][2]};
+                            auto found=vertexLookup.find(key);
+                            if(found!=vertexLookup.end()) face[i]=found->second;
+                            else {
+                                if(obj->vertices.size()>=65536) {valid=false;break;}
+                                face[i]=uint16_t(obj->vertices.size());
+                                obj->addVertex(createVertex(key[0],key[1],key[2]));
+                                vertexLookup.emplace(key,face[i]);
+                            }
+                        }
+                        if(valid) {
+                            obj->addTriangle(face[0],face[1],face[2],currentMaterial);
+                            if(numVertices==4) obj->addTriangle(face[0],face[2],face[3],currentMaterial);
+                        }
+                    }
                 }
             }
 
