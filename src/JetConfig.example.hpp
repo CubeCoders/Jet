@@ -98,6 +98,12 @@
 // The runtime flag affects UVs, not the build's Phong normal interpolation.
 #define PERSPECTIVE_CORRECT_TEXTURES 0
 
+// Opt-in desktop-quality UV interpolation using full-width edge weights and
+// double reciprocals. Avoids large projected triangle overflow and distant
+// fixed-point reciprocal quantization. Costs more on embedded CPUs.
+// Only affects perspective UVs; affine mapping and lighting are unchanged.
+#define JET_HIGH_PRECISION_UVS 0
+
 // BILINEAR_FILTER: Bi-linear interpolation between texels during texture
 // sampling. Reduces blockiness at the cost of extra multiplies per pixel.
 // When compiled in, direct RGB565 textures default to bilinear; set

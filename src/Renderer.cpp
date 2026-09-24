@@ -38,6 +38,13 @@
 #define JET_CONSTANT_NORMAL_LIGHTING 1
 #endif
 
+// Desktop/high-resolution UV interpolation: use full edge weights and double
+// reciprocals instead of the compact fixed-point path. Opt-in so embedded
+// builds retain their existing code size, arithmetic and timing.
+#ifndef JET_HIGH_PRECISION_UVS
+#define JET_HIGH_PRECISION_UVS 0
+#endif
+
 // Standard "over" alpha blend in RGB565. Used when SCREEN_DOOR_ALPHA is
 // disabled — the renderer still has to honour material->alpha and the
 // per-object fade, just by lerping channels into the framebuffer instead of
@@ -895,12 +902,18 @@ namespace Renderer
         // TEXTURE_MAPPING: RenderVertex carries uv only in textured builds.
         // (PERSPECTIVE_CORRECT_TEXTURES without TEXTURE_MAPPING is still a
         // valid config — it drives perspective-correct PHONG normals.)
+#if JET_HIGH_PRECISION_UVS
+        const double inverseZ1=1.0/v1.position.z,inverseZ2=1.0/v2.position.z,inverseZ3=1.0/v3.position.z;
+        const double preciseU1=v1.uv.x*inverseZ1,preciseU2=v2.uv.x*inverseZ2,preciseU3=v3.uv.x*inverseZ3;
+        const double preciseV1=v1.uv.y*inverseZ1,preciseV2=v2.uv.y*inverseZ2,preciseV3=v3.uv.y*inverseZ3;
+#else
         int32_t uOverZ1 = (v1.uv.x * oneOverZ1) / FIXED_POINT_SCALE;
         int32_t vOverZ1 = (v1.uv.y * oneOverZ1) / FIXED_POINT_SCALE;
         int32_t uOverZ2 = (v2.uv.x * oneOverZ2) / FIXED_POINT_SCALE;
         int32_t vOverZ2 = (v2.uv.y * oneOverZ2) / FIXED_POINT_SCALE;
         int32_t uOverZ3 = (v3.uv.x * oneOverZ3) / FIXED_POINT_SCALE;
         int32_t vOverZ3 = (v3.uv.y * oneOverZ3) / FIXED_POINT_SCALE;
+#endif
 #endif // TEXTURE_MAPPING
 
 #if LIGHTING
@@ -1708,6 +1721,16 @@ namespace Renderer
                         {
     #if PERSPECTIVE_CORRECT_TEXTURES
                             if (usePerspectiveUV) {
+#if JET_HIGH_PRECISION_UVS
+                            // The common area denominator cancels in (u/z)/(1/z).
+                            // Keep ew* at full width: near clipping can produce
+                            // enormous projected triangles even on a small viewport.
+                            const double inverseZ=inverseZ1*ew0+inverseZ2*ew1+inverseZ3*ew2;
+                            if(inverseZ<=0)continue;
+                            const double reciprocal=1.0/inverseZ;
+                            uv.x=int32_t((preciseU1*ew0+preciseU2*ew1+preciseU3*ew2)*reciprocal);
+                            uv.y=int32_t((preciseV1*ew0+preciseV2*ew1+preciseV3*ew2)*reciprocal);
+#else
                             // Interpolate 1/z, u/z, and v/z at the current pixel
                             int32_t interpolatedOneOverZ = (oneOverZ1 * w0 + oneOverZ2 * w1 + oneOverZ3 * w2) / denom;
                             int32_t interpolatedUOverZ = (uOverZ1 * w0 + uOverZ2 * w1 + uOverZ3 * w2) / denom;
@@ -1720,6 +1743,7 @@ namespace Renderer
                             // Compute final texture coordinates
                             uv.x = (interpolatedUOverZ * FIXED_POINT_SCALE) / interpolatedOneOverZ;
                             uv.y = (interpolatedVOverZ * FIXED_POINT_SCALE) / interpolatedOneOverZ;
+#endif
                             } else
     #endif
                             { // Affine texture mapping
