@@ -18,6 +18,9 @@ This measures rasterized triangles over render time, excluding display scanout
 and frame pacing. Throughput varies with scene complexity, triangle size and
 enabled rendering features.
 
+See the [ESP32 optimisation measurements](docs/ESP32Performance.md) for exact
+indexed-texture results, memory costs and supported sampling paths.
+
 ## Community
 
 Share projects and get help on the [Discord server](https://discord.gg/FSdJYDTEYt).

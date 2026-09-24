@@ -1,5 +1,5 @@
 // Prepared constant-colour kernel versus the original /256 channel equations.
-#include "BlendSpans.hpp"
+#include "../src/BlendSpans.hpp"
 #include <cstdio>
 #include <algorithm>
 #if defined(ESP_PLATFORM)
@@ -66,12 +66,16 @@ int runConstantBlendChecks() {
             if (!compare()) return 1;
           }
     // Current-frame water may read pixels written earlier in this same span.
-    for (int delta : {-16,-8,-1,0,1,8,16}) for (int alpha : {0,1,127,255}) {
+    // Include in-place texture fading, every halfword phase, vector boundaries
+    // and scalar tails; source bounds stay inside the guarded array.
+    for (int delta : {-16,-8,-1,0,1,8,16}) for (int alpha : {0,1,127,255})
+      for (int phase = 0; phase < 8; ++phase)
+        for (int n : {-1,0,1,7,8,15,16,17,31,32,33,127,240}) {
         for (int i = 0; i < 288; ++i) actual[i] = expected[i] = (uint16_t)(i * 719);
-        for (int i = 0; i < 240; ++i)
-            expected[24+i] = reference(0x7bef, expected[24+delta+i], alpha);
+        for (int i = 0; i < n; ++i)
+            expected[24+phase+i] = reference(0x7bef, expected[24+phase+delta+i], alpha);
         state.prepare(0x7bef, (uint8_t)alpha, true);
-        state.blend(actual+24, actual+24+delta, 240);
+        state.blend(actual+24+phase, actual+24+phase+delta, n);
         if (!compare()) return 1;
     }
     std::printf("Constant blend: %llu pixels/guards passed\n", checks);

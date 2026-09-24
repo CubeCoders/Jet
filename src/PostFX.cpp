@@ -1,8 +1,106 @@
 #include "PostFX.hpp"
 #include <algorithm>
 #include <cstring>
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+#include "esp_attr.h"
+#endif
 
 namespace Renderer {
+
+#if POSTFX_CRT
+namespace {
+inline uint16_t crtPixel(uint16_t pixel, unsigned gain) {
+    const unsigned r = (((pixel >> 11) & 31) * gain + 127) / 255;
+    const unsigned g = (((pixel >> 5) & 63) * gain + 127) / 255;
+    const unsigned b = ((pixel & 31) * gain + 127) / 255;
+    return uint16_t((r << 11) | (g << 5) | b);
+}
+
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+alignas(16) static const DRAM_ATTR uint32_t crtConstants[] = {
+    0x001f001f, 0x001f001f, 0x001f001f, 0x001f001f,
+    0x003f003f, 0x003f003f, 0x003f003f, 0x003f003f,
+    0x007f007f, 0x007f007f, 0x007f007f, 0x007f007f,
+    0x80818081, 0x80818081, 0x80818081, 0x80818081
+};
+// Keep the hardware loop outside any compiler-generated outer row loop.
+static void IRAM_ATTR __attribute__((noinline)) crtSpan(
+#else
+static void crtSpan(
+#endif
+    uint16_t* pixels, int count, unsigned gain) {
+    if (count <= 0) return;
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+    while (count && (uintptr_t(pixels) & 15)) {
+        *pixels = crtPixel(*pixels, gain);
+        ++pixels;
+        --count;
+    }
+    const int blocks = count / 8;
+    if (blocks) {
+        const uint32_t gainLanes = gain | (gain << 16);
+        const uint32_t* gainLanesPointer = &gainLanes;
+        const uint32_t* constants = crtConstants;
+        uint32_t savedSar, tmp;
+        // q0=input, q1/q2=channel masks, q3=gain, q4=127, q5=32897,
+        // q6=channel scratch, q7=output. Every load/store is aligned and
+        // wholly inside the span. Saturated additions stay <=16192.
+        // floor(v/255) == (v*32897)>>23 for these non-negative 16-bit v.
+        __asm__ volatile (
+            "rsr %[saved], sar\n\t"
+            "ee.vld.128.ip q1, %[constants], 16\n\t"
+            "ee.vld.128.ip q2, %[constants], 16\n\t"
+            "ee.vld.128.ip q4, %[constants], 16\n\t"
+            "ee.vld.128.ip q5, %[constants], 0\n\t"
+            "ee.vldbc.32 q3, %[gain]\n\t"
+            "loopgtz %[blocks], 1f\n\t"
+            "movi %[tmp], 0\n\twsr %[tmp], sar\n\t"
+            "ee.vld.128.ip q0, %[pixels], 0\n\t"
+            "ee.andq q7, q0, q1\n\t"
+            "ee.vmul.u16 q7, q7, q3\n\t"
+            "movi %[tmp], 23\n\twsr %[tmp], sar\n\t"
+            "ee.vadds.s16 q7, q7, q4\n\t"
+            "ee.vmul.u16 q7, q7, q5\n\t"
+            "movi %[tmp], 5\n\twsr %[tmp], sar\n\tnop\n\t"
+            "ee.vsr.32 q6, q0\n\t"
+            "movi %[tmp], 0\n\twsr %[tmp], sar\n\t"
+            "ee.andq q6, q6, q2\n\t"
+            "ee.vmul.u16 q6, q6, q3\n\t"
+            "movi %[tmp], 23\n\twsr %[tmp], sar\n\t"
+            "ee.vadds.s16 q6, q6, q4\n\t"
+            "ee.vmul.u16 q6, q6, q5\n\t"
+            "movi %[tmp], 5\n\twsr %[tmp], sar\n\tnop\n\t"
+            "ee.vsl.32 q6, q6\n\t"
+            "movi %[tmp], 11\n\twsr %[tmp], sar\n\t"
+            "ee.orq q7, q7, q6\n\t"
+            "ee.vsr.32 q6, q0\n\t"
+            "movi %[tmp], 0\n\twsr %[tmp], sar\n\t"
+            "ee.andq q6, q6, q1\n\t"
+            "ee.vmul.u16 q6, q6, q3\n\t"
+            "movi %[tmp], 23\n\twsr %[tmp], sar\n\t"
+            "ee.vadds.s16 q6, q6, q4\n\t"
+            "ee.vmul.u16 q6, q6, q5\n\t"
+            "movi %[tmp], 11\n\twsr %[tmp], sar\n\tnop\n\t"
+            "ee.vsl.32 q6, q6\n\t"
+            "ee.orq q7, q7, q6\n\t"
+            "ee.vst.128.ip q7, %[pixels], 16\n\t"
+            "1:\n\twsr %[saved], sar\n\t"
+            : [pixels] "+&r"(pixels), [constants] "+&r"(constants),
+              [gain] "+&r"(gainLanesPointer), [saved] "=&r"(savedSar),
+              [tmp] "=&r"(tmp)
+            : [blocks] "r"(blocks)
+            : "memory"
+        );
+        count %= 8;
+    }
+#endif
+    while (count-- > 0) {
+        *pixels = crtPixel(*pixels, gain);
+        ++pixels;
+    }
+}
+} // namespace
+#endif
 
 PostFX::PostFX(int screenWidth, int screenHeight)
     : screenWidth(screenWidth), screenHeight(screenHeight) {
@@ -311,17 +409,14 @@ void PostFX::applyCRT(uint16_t* framebuffer, uint8_t intensity,
     // indices instead would make pairs of dark lines and shift with the field.
     if (alternating && !oddRows) return;
     const unsigned gain = 255u - intensity;
+#if FIELD_BUFFERS
+    // Every stored row in an odd packed field needs the same operation.
+    crtSpan(framebuffer, width * (screenHeight / 2), gain);
+#else
     for (int y = 1; y < screenHeight; y += 2) {
-        const int storedY = FIELD_BUFFERS ? y / 2 : y;
-        uint16_t* row = framebuffer + storedY * width;
-        for (int x = 0; x < width; ++x) {
-            const unsigned pixel = row[x];
-            const unsigned r = (((pixel >> 11) & 31) * gain + 127) / 255;
-            const unsigned g = (((pixel >> 5) & 63) * gain + 127) / 255;
-            const unsigned b = ((pixel & 31) * gain + 127) / 255;
-            row[x] = uint16_t((r << 11) | (g << 5) | b);
-        }
+        crtSpan(framebuffer + y * width, width, gain);
     }
+#endif
     #endif
 }
 

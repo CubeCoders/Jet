@@ -321,3 +321,47 @@ configuration of every translation unit. Run both `SORT_TRIANGLES=0` and `1`,
 and enable texturing and picking for the expanded compatibility check. The
 examples repository's `esp32-mesh-instancing/tests` CMake project builds both
 configurations and also verifies its real scene with concurrent raster bands.
+
+
+## Static indexed8 texture spans
+
+`indexed8_spans.cpp` compares static palette sampling with independently decoded
+RGB565 texels, signed division/modulo UV addressing, and per-channel blend
+equations. It covers 13 texture shapes, byte/halfword alignments, negative UVs,
+every row length through 480 pixels, destination guards, and alpha/additive/LOD
+combinations across the 128-pixel staging boundary. The fixture performs
+124,824,864 checks and uses explicit failures rather than C assertions.
+
+Build as C++17 with `src/BlendSpans.cpp` and the same `JetConfig.hpp` on both
+translation units' include paths. For example, from this tests directory in
+JetExamples, using the ESP 88 configuration (`FIXED_POINT_SCALE=1024`):
+
+```sh
+c++ -O2 -std=c++17 -I../../../esp32-neon-film/main/firmware -I../src indexed8_spans.cpp ../src/BlendSpans.cpp -o indexed8_spans
+./indexed8_spans
+```
+
+On MSVC, use `/O2 /EHsc /std:c++17` with the same sources and include paths.
+The host regression checks exact sampler and blend semantics; S3 timings must
+be measured on hardware. Indexed textures remain unsupported by Sprite2D's
+RGB565 row compositor, so its glow and credit textures must stay RGB565.
+
+
+## Exact setup and RGB565 kernels
+
+`depth_buckets.cpp` checks reciprocal bucket selection against the original
+signed division, including clamping, boundaries and random 32-bit inputs.
+Build it standalone as C++17 with assertions enabled (`-UNDEBUG` or `/UNDEBUG`).
+
+`texture_spans.cpp` checks RGB565 affine sampling, alpha/additive blending,
+LOD fades, alignment, tails and guards against independent pixel equations.
+Build it with `src/BlendSpans.cpp` and a matching `JetConfig.hpp`, as for the
+indexed8 fixture. `constant_blend.cpp` additionally exercises overlapping source
+and destination spans, in-place fading and negative/zero lengths.
+
+`crt_gain.cpp` checks all 65,536 RGB565 colours at all 256 strengths, alignments
+and short span tails against the proportional CRT reference. Build with
+`src/PostFX.cpp`; run full/half width, full/field storage and `POSTFX_CRT=0`.
+The JetExamples CRT native suite runs these five configurations alongside its
+existing layout and scene checks. The ESP 88 native suite runs the depth,
+RGB565, indexed8 and constant-blend fixtures.

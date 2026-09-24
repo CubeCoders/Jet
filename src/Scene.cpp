@@ -117,7 +117,7 @@ static inline __attribute__((always_inline)) Vector3 objectCentre(const Object& 
 }
 
 #endif // JET_MESH_INSTANCING
-bool Scene::cullObject(Object* obj,
+bool Scene::cullObject(Object* obj, const Vector3& relativeCentre, int32_t maxExtent,
                        int32_t camCosX, int32_t camSinX,
                        int32_t camCosY, int32_t camSinY,
                        int32_t camCosZ, int32_t camSinZ) const {
@@ -128,7 +128,9 @@ bool Scene::cullObject(Object* obj,
     const Vector3& bMin = obj->boundingBoxMin;
     const Vector3& bMax = obj->boundingBoxMax;
 
-    int outLeft = 0, outRight = 0, outTop = 0, outBottom = 0, outNear = 0, outFar = 0;
+    // A box is rejected only if every corner is outside the same plane.
+    // Once no such plane remains, further corner transforms cannot reject it.
+    unsigned commonOutside = 0x3f;
     float   fovFactor = camera->fovFactor;
     int32_t nearPlane = camera->nearPlane;
     int32_t farPlane  = camera->farPlane;
@@ -154,23 +156,15 @@ bool Scene::cullObject(Object* obj,
     // the sphere's z sign — no divides, no per-object sqrt (plane normal
     // lengths cullPlaneLh/Lv are cached per frame in prepareFrame()).
     {
-        const float r = (float)std::max({bMax.x - bMin.x,
-                                         bMax.y - bMin.y,
-                                         bMax.z - bMin.z});
+        const float r = (float)maxExtent;
         constexpr float invFps = 1.0f / (float)FIXED_POINT_SCALE;
         const float cYc = (float)camCosY * invFps, cYs = (float)camSinY * invFps;
         const float cXc = (float)camCosX * invFps, cXs = (float)camSinX * invFps;
         const float cZc = (float)camCosZ * invFps, cZs = (float)camSinZ * invFps;
-#if JET_MESH_INSTANCING
-        const Vector3 centre=objectCentre(*obj,camCosY,camSinY);
-        const float px = (float)(centre.x - camPos.x);
-        const float py = (float)(centre.y - camPos.y);
-        const float pz = (float)(centre.z - camPos.z);
-#else
-        const float px = (float)(objPos.x + obj->centreVolume.x - camPos.x);
-        const float py = (float)(objPos.y + obj->centreVolume.y - camPos.y);
-        const float pz = (float)(objPos.z + obj->centreVolume.z - camPos.z);
-#endif // JET_MESH_INSTANCING
+        // Reuse the camera-relative centre from the distance/LOD prepass.
+        const float px = (float)relativeCentre.x;
+        const float py = (float)relativeCentre.y;
+        const float pz = (float)relativeCentre.z;
         // Camera rotation Y, X, Z — same order as the corner loop below.
         const float t1x =  px * cYc + pz * cYs;
         const float t1z = -px * cYs + pz * cYc;
@@ -245,22 +239,25 @@ bool Scene::cullObject(Object* obj,
                  (p.x * camSinZ + p.y * camCosZ) / FIXED_POINT_SCALE,
                   p.z); p = r;
 
-        if (p.z < nearPlane) { outNear++; continue; }
-        if (p.z > farPlane)  { outFar++;  continue; }
-        if (p.z <= 0)        { outNear++; continue; }
-
-        const float invZ = fovFactor / (float)p.z;
-        int32_t sx = (int32_t)(p.x * invZ) + screenWidth / 2;
-        int32_t sy = screenHeight / 2 - (int32_t)(p.y * invZ);
-        if (sx < 0)            outLeft++;
-        if (sx > screenWidth)  outRight++;
-        if (sy < 0)            outTop++;
-        if (sy > screenHeight) outBottom++;
+        unsigned outside = 0;
+        if (p.z < nearPlane) outside = 1;
+        else if (p.z > farPlane) outside = 2;
+        else if (p.z <= 0) outside = 1;
+        else {
+            // Preserve projection and truncation at the viewport boundary.
+            const float invZ = fovFactor / (float)p.z;
+            const int32_t sx = (int32_t)(p.x * invZ) + screenWidth / 2;
+            const int32_t sy = screenHeight / 2 - (int32_t)(p.y * invZ);
+            if (sx < 0)            outside |= 4;
+            if (sx > screenWidth)  outside |= 8;
+            if (sy < 0)            outside |= 16;
+            if (sy > screenHeight) outside |= 32;
+        }
+        commonOutside &= outside;
+        if (!commonOutside) return false;
     }
 
-    return (outNear == 8 || outFar == 8 ||
-            outLeft == 8 || outRight == 8 ||
-            outTop  == 8 || outBottom == 8);
+    return true;
 }
 
 Scene::Scene(uint16_t* framebuffer, uint16_t* zBuffer, int screenWidth, int screenHeight)
@@ -557,6 +554,7 @@ void PERF_CRITICAL Scene::clearBuffers() {
 
 void Scene::prepareFrame() {
     if (!camera) return;
+    depthBuckets.setRange(camera->farPlane - camera->nearPlane);
     // renderEvenLines drives the frame-parity selection used by both interlaced
     // and checkerboard modes.  In interlaced mode it selects which rows to draw;
     // in checkerboard mode it selects which (x+y) pixel parity to draw.  When
@@ -701,16 +699,16 @@ void Scene::prepareFrame() {
 #endif // JET_MESH_INSTANCING
         int64_t distSq = (int64_t)_ocx*_ocx + (int64_t)_ocy*_ocy + (int64_t)_ocz*_ocz;
         int32_t dist   = -1;
+        const int32_t maxExtent = std::max({
+            obj->boundingBoxMax.x - obj->boundingBoxMin.x,
+            obj->boundingBoxMax.y - obj->boundingBoxMin.y,
+            obj->boundingBoxMax.z - obj->boundingBoxMin.z});
         {
-            const int32_t maxExtent = std::max({
-                obj->boundingBoxMax.x - obj->boundingBoxMin.x,
-                obj->boundingBoxMax.y - obj->boundingBoxMin.y,
-                obj->boundingBoxMax.z - obj->boundingBoxMin.z});
             const int64_t farCutoff = static_cast<int64_t>(camera->farPlane) + maxExtent;
             if (distSq > farCutoff * farCutoff) continue;
         }
         // 2) Object-level AABB frustum cull (all 8 corners; full rotation).
-        if (cullObject(obj, camCosX, camSinX, camCosY, camSinY, camCosZ, camSinZ))
+        if (cullObject(obj, {_ocx, _ocy, _ocz}, maxExtent, camCosX, camSinX, camCosY, camSinY, camCosZ, camSinZ))
             continue;
         // 3) Per-object distance fade (two ramps, multiplied):
         //     - fadeFar > 0:   close=opaque, far=invisible (decor fade-out).
@@ -1471,9 +1469,17 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
     }
 
 #if SORT_TRIANGLES
+    // Small meshes cannot amortize key construction and permutation passes.
+    // Keep their existing comparator and avoid allocating extra sort scratch.
+    constexpr size_t CachedTriangleSortMin = 64;
+    struct TriangleSortKey { int32_t depth; uint32_t index; };
+#if JET_MESH_INSTANCING
+    static std::vector<uint32_t> triangleOrder;
+    const TriangleSortKey* sortedTriangleKeys = nullptr;
+#endif
+    if (meshSource->triangles.size() < CachedTriangleSortMin) {
 #if JET_MESH_INSTANCING
     // Sort transient indices, never a shared immutable prototype's triangles.
-    static std::vector<uint32_t> triangleOrder;
     triangleOrder.resize(meshSource->triangles.size());
     for (size_t i=0;i<triangleOrder.size();++i) triangleOrder[i]=(uint32_t)i;
     std::sort(triangleOrder.begin(),triangleOrder.end(),[&](uint32_t ai,uint32_t bi) {
@@ -1492,6 +1498,43 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
         return (z1 + z2 + z3) / 3 > (transformedVertices[b.v1].position.z + transformedVertices[b.v2].position.z + transformedVertices[b.v3].position.z) / 3;
 #endif // JET_MESH_INSTANCING
     });
+    } else {
+    // Calculate each exact signed average once. Comparisons then read two
+    // compact keys instead of gathering six transformed vertex depths.
+    static std::vector<TriangleSortKey> triangleKeys;
+    triangleKeys.resize(meshSource->triangles.size());
+    for (size_t i=0; i<triangleKeys.size(); ++i) {
+        const auto& t = meshSource->triangles[i];
+        triangleKeys[i] = {
+            (transformedVertices[t.v1].position.z + transformedVertices[t.v2].position.z +
+             transformedVertices[t.v3].position.z) / 3,
+            (uint32_t)i};
+    }
+    std::sort(triangleKeys.begin(), triangleKeys.end(), [](const TriangleSortKey& a, const TriangleSortKey& b) {
+        return a.depth > b.depth;
+    });
+#if !JET_MESH_INSTANCING
+    // Preserve the mutable mesh's sorted order, including the input order
+    // seen by the next frame. Move each triangle once along permutation
+    // cycles; marking consumed indices needs no second scratch buffer.
+    for (size_t i=0; i<triangleKeys.size(); ++i) {
+        if (triangleKeys[i].index == i) continue;
+        const Object::Triangle saved = meshSource->triangles[i];
+        size_t dst = i;
+        for (;;) {
+            const size_t src = triangleKeys[dst].index;
+            triangleKeys[dst].index = (uint32_t)dst;
+            if (src == i) break;
+            meshSource->triangles[dst] = meshSource->triangles[src];
+            dst = src;
+        }
+        meshSource->triangles[dst] = saved;
+    }
+#endif // !JET_MESH_INSTANCING
+#if JET_MESH_INSTANCING
+    sortedTriangleKeys = triangleKeys.data();
+#endif
+    }
 #endif
 
     // ------------------------------------------------------------------
@@ -1660,9 +1703,7 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
                 constexpr int32_t zBiasScale = 256;
                 constexpr int K = SortDepthBucketCount;
                 const int32_t key = avgZ - static_cast<int32_t>(obj->zBias) * zBiasScale;
-                const int32_t range = std::max<int32_t>(camera->farPlane - camera->nearPlane, 1);
-                int b = static_cast<int>((static_cast<int64_t>(key - camera->nearPlane) * K) / range);
-                b = std::max(0, std::min(b, K - 1));
+                const int b = int(depthBuckets.index(key - camera->nearPlane));
 #if Z_BUFFERING && defined(JET_DEPTH_SORT_OPAQUE_FRONT_TO_BACK) && JET_DEPTH_SORT_OPAQUE_FRONT_TO_BACK
                 const bool opaque = renderer->isDepthTestingEnabled() && !DEPTH_ALPHA_BLEND && mat && mat->alpha == 255
                     && objAlpha == 255 && !mat->shader
@@ -1683,7 +1724,7 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
     for (size_t triIdx = 0; triIdx < meshSource->triangles.size(); ++triIdx) {
 #if JET_MESH_INSTANCING
 #if SORT_TRIANGLES
-        const size_t sourceIndex=triangleOrder[triIdx];
+        const size_t sourceIndex=sortedTriangleKeys ? sortedTriangleKeys[triIdx].index : triangleOrder[triIdx];
 #else
         const size_t sourceIndex=triIdx;
 #endif
