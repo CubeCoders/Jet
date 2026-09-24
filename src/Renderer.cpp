@@ -1277,6 +1277,10 @@ namespace Renderer
                             r.hit           = true;
                             r.object        = currentPickObject;
                             r.triangleIndex = currentPickTriangleIndex;
+#if JET_MESH_INSTANCING
+                              r.mesh = currentPickMesh;
+                              r.instanceIndex = currentPickInstanceIndex;
+#endif
                             r.depth         = pickZ;
                             r.x             = (int16_t)qx;
                             r.y             = (int16_t)y;

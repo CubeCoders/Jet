@@ -36,6 +36,8 @@ for the available options.
 ### Rendering
 
 - Triangle and quad meshes with per-face material assignment.
+- Opt-in [shared mesh instancing](docs/instancing.md) to reduce repeated geometry
+  storage, with independent placements and material overrides.
 - Flat, Gouraud, Phong and wireframe shading modes (per material).
 - Affine and perspective-correct texture mapping; optional bilinear filtering.
 - Optional Z-buffering, or painter's-algorithm sorting (per-object and/or

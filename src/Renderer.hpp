@@ -160,6 +160,10 @@ class Rasterizer
         PickResult*      pickResults = nullptr;
         int              pickQueryCount = 0;     ///< Number of slots in use this frame (0..MAX_PICK_QUERIES).
         Object*          currentPickObject = nullptr;       ///< Set by Scene before each drawTriangle for hit attribution.
+#if JET_MESH_INSTANCING
+        const Object*    currentPickMesh = nullptr;
+        int32_t          currentPickInstanceIndex = -1;
+#endif // JET_MESH_INSTANCING
         int32_t          currentPickTriangleIndex = -1;     ///< Source-mesh triangle index for hit attribution.
 #endif
 

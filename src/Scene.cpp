@@ -95,6 +95,28 @@ static inline uint16_t sceneLambertDiffuse(const Vector3& N, const Vector3& L,
 #endif
 
 // Returns true if the object's AABB is entirely outside the view frustum.
+#if JET_MESH_INSTANCING
+// Account for an off-origin batch when the owning object rotates. This centre
+// is shared by conservative frustum tests, distance fades and LOD selection.
+#ifdef _MSC_VER
+static __forceinline Vector3 objectCentre(const Object& obj, int32_t camCosY, int32_t camSinY) {
+#else
+static inline __attribute__((always_inline)) Vector3 objectCentre(const Object& obj, int32_t camCosY, int32_t camSinY) {
+#endif
+    Vector3 p=obj.centreVolume;
+    if (obj.isBillboard) {
+        p={(int32_t)(((int64_t)p.x*camCosY-(int64_t)p.z*camSinY)/FIXED_POINT_SCALE),p.y,
+           (int32_t)(((int64_t)p.x*camSinY+(int64_t)p.z*camCosY)/FIXED_POINT_SCALE)};
+    } else if (obj.rotation.x || obj.rotation.y || obj.rotation.z) {
+        const auto t=Object::InstanceTransform::rotated(obj.rotation);
+        p={(int32_t)(t.basis[0]*p.x+t.basis[1]*p.y+t.basis[2]*p.z),
+           (int32_t)(t.basis[3]*p.x+t.basis[4]*p.y+t.basis[5]*p.z),
+           (int32_t)(t.basis[6]*p.x+t.basis[7]*p.y+t.basis[8]*p.z)};
+    }
+    return p+obj.position;
+}
+
+#endif // JET_MESH_INSTANCING
 bool Scene::cullObject(Object* obj,
                        int32_t camCosX, int32_t camSinX,
                        int32_t camCosY, int32_t camSinY,
@@ -114,8 +136,12 @@ bool Scene::cullObject(Object* obj,
     // ---- Quick sphere-vs-frustum classification ----------------------------
     // One point transform (~20 ops) instead of the 8-corner AABB test
     // (~240 ops) for the vast majority of objects. Conservative bounding
+#if JET_MESH_INSTANCING
+    // sphere: centre transformed into world space, with radius = longest
+#else
     // sphere: centre at position+centreVolume (same rotation-ignoring
     // convention as prepareFrame's far pre-cull) with radius = longest
+#endif // JET_MESH_INSTANCING
     // AABB dimension, which always covers the true half-diagonal
     // (halfDiag <= 0.866*maxExtent) plus slack for rotated meshes.
     //
@@ -135,9 +161,16 @@ bool Scene::cullObject(Object* obj,
         const float cYc = (float)camCosY * invFps, cYs = (float)camSinY * invFps;
         const float cXc = (float)camCosX * invFps, cXs = (float)camSinX * invFps;
         const float cZc = (float)camCosZ * invFps, cZs = (float)camSinZ * invFps;
+#if JET_MESH_INSTANCING
+        const Vector3 centre=objectCentre(*obj,camCosY,camSinY);
+        const float px = (float)(centre.x - camPos.x);
+        const float py = (float)(centre.y - camPos.y);
+        const float pz = (float)(centre.z - camPos.z);
+#else
         const float px = (float)(objPos.x + obj->centreVolume.x - camPos.x);
         const float py = (float)(objPos.y + obj->centreVolume.y - camPos.y);
         const float pz = (float)(objPos.z + obj->centreVolume.z - camPos.z);
+#endif // JET_MESH_INSTANCING
         // Camera rotation Y, X, Z — same order as the corner loop below.
         const float t1x =  px * cYc + pz * cYs;
         const float t1z = -px * cYs + pz * cYc;
@@ -656,9 +689,16 @@ void Scene::prepareFrame() {
         //    (always >= the true bounding-sphere radius — never drops a
         //    visible object).
         uint8_t objAlpha = 255;
+#if JET_MESH_INSTANCING
+        const Vector3 centre=objectCentre(*obj,camCosY,camSinY);
+        const int32_t _ocx = centre.x - camera->position.x;
+        const int32_t _ocy = centre.y - camera->position.y;
+        const int32_t _ocz = centre.z - camera->position.z;
+#else
         const int32_t _ocx = (obj->position.x + obj->centreVolume.x) - camera->position.x;
         const int32_t _ocy = (obj->position.y + obj->centreVolume.y) - camera->position.y;
         const int32_t _ocz = (obj->position.z + obj->centreVolume.z) - camera->position.z;
+#endif // JET_MESH_INSTANCING
         int64_t distSq = (int64_t)_ocx*_ocx + (int64_t)_ocy*_ocy + (int64_t)_ocz*_ocz;
         int32_t dist   = -1;
         {
@@ -847,6 +887,10 @@ void Scene::rasterizeBand(int yMin, int yMax, uint8_t* triangleFlags) {
 #if MAX_PICK_QUERIES > 0
         bandRast.currentPickObject        = t.sourceObject;
         bandRast.currentPickTriangleIndex = t.sourceTriangleIndex;
+#if JET_MESH_INSTANCING
+        bandRast.currentPickMesh = t.sourceMesh;
+        bandRast.currentPickInstanceIndex = t.sourceInstanceIndex;
+#endif // JET_MESH_INSTANCING
 #endif
         // t.avgZ rides along as the FAST_Z depth hint: emitTri computed the
         // same three-vertex average and already culled it against near/far,
@@ -997,8 +1041,13 @@ void Scene::getStatistics(int& objectCount, int& triangleCount, int& vertexCount
 
     for (const auto& obj : objects) {
         if (!obj->enabled) continue;
+#if JET_MESH_INSTANCING
+        triangleCount += static_cast<int>(obj->triangleCount());
+        vertexCount += static_cast<int>(obj->vertexCount());
+#else
         triangleCount += static_cast<int>(obj->triangles.size());
         vertexCount += static_cast<int>(obj->vertices.size());
+#endif // JET_MESH_INSTANCING
     }
 }
 
@@ -1007,7 +1056,11 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
                                      int32_t camCosY, int32_t camSinY,
                                      int32_t camCosZ, int32_t camSinZ,
                                      uint8_t objAlpha,
+#if JET_MESH_INSTANCING
+                                     const Object* meshSource) {
+#else
                                      Object* meshSource) {
+#endif // JET_MESH_INSTANCING
     // meshSource decouples "which mesh do we rasterise" from "where / how
     // does the object live in the world". Defaults to obj itself, so the
     // non-LOD path is unchanged. When the global LOD system picks a
@@ -1025,8 +1078,12 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
 #else
     static std::vector<PipelineVertex> transformedVertices;
 #endif
+#if JET_MESH_INSTANCING
+
+#else
     const size_t vertCount = meshSource->vertices.size();
     transformedVertices.resize(vertCount);
+#endif // JET_MESH_INSTANCING
 
     Vector3 camPos(camera->position);
     #if FLOAT_CAMERA_ANGLES
@@ -1132,7 +1189,67 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
     const float fTy = fCamM10*fDx + fCamM11*fDy + fCamM12*fDz;
     const float fTz = fCamM20*fDx + fCamM21*fDy + fCamM22*fDz;
 
+#if JET_MESH_INSTANCING
+    // The owner is culled once. Its own geometry and all instances retain
+    // insertion order in the global painter queue, including LOD batches.
+    const Object* batch=meshSource;
+    const float baseM[9]={fM00,fM01,fM02,fM10,fM11,fM12,fM20,fM21,fM22};
+    const float baseT[3]={fTx,fTy,fTz};
+
+    for (size_t draw=0; draw<=batch->instances.size(); ++draw) {
+        const Object::MeshInstance* instance=draw ? &batch->instances[draw-1] : nullptr;
+        meshSource=instance ? instance->mesh.get() : batch;
+        if (!meshSource || meshSource->vertices.empty()) continue;
+        const size_t vertCount=meshSource->vertices.size();
+        transformedVertices.resize(vertCount);
+        float composed[9], translated[3];
+        const float* matrix=baseM; const float* translation=baseT;
+        if (instance) {
+            const auto& t=instance->transform; const float* m=t.basis;
+            float billboardM[9];
+            const float* parent=baseM;
+            if (isBillboard) {
+                const float cy=(float)camCosY/FIXED_POINT_SCALE, sy=(float)camSinY/FIXED_POINT_SCALE;
+                for (int row=0;row<3;++row) {
+                    billboardM[row*3]=baseM[row*3]*cy+baseM[row*3+2]*sy;
+                    billboardM[row*3+1]=baseM[row*3+1];
+                    billboardM[row*3+2]=-baseM[row*3]*sy+baseM[row*3+2]*cy;
+                }
+                parent=billboardM;
+            }
+            for (int row=0;row<3;++row) {
+                for (int col=0;col<3;++col)
+                    composed[row*3+col]=parent[row*3]*m[col]+parent[row*3+1]*m[3+col]+parent[row*3+2]*m[6+col];
+                translated[row]=parent[row*3]*t.position.x+parent[row*3+1]*t.position.y+parent[row*3+2]*t.position.z+baseT[row];
+            }
+            matrix=composed; translation=translated;
+        }
+        const float fM00=matrix[0], fM01=matrix[1], fM02=matrix[2];
+        const float fM10=matrix[3], fM11=matrix[4], fM12=matrix[5];
+        const float fM20=matrix[6], fM21=matrix[7], fM22=matrix[8];
+        const float fTx=translation[0], fTy=translation[1], fTz=translation[2];
+        Material* overrideMat=instance ? instance->materialOverride : nullptr;
+        // Original triangle indices remain stable even when SORT_TRIANGLES
+        // orders a mesh differently. Ignore malformed directly edited tables.
+        Material* const* triangleMaterials=instance && instance->triangleMaterials &&
+            instance->triangleMaterials->size()==meshSource->triangles.size()
+            ? instance->triangleMaterials->data() : nullptr;
+
+#endif // JET_MESH_INSTANCING
 #if LIGHTING
+#if JET_MESH_INSTANCING
+    // Ordinary billboard normals retain their authored orientation. Match
+    // that convention for instances: apply the instance rotation, excluding
+    // the camera-facing yaw used only by billboard positions above.
+    float billboardNormals[9];
+    const float* normalMatrix=matrix;
+    if (isBillboard && instance) {
+        const float* m=instance->transform.basis;
+        for (int row=0;row<3;++row) for (int col=0;col<3;++col)
+            billboardNormals[row*3+col]=baseM[row*3]*m[col]+baseM[row*3+1]*m[3+col]+baseM[row*3+2]*m[6+col];
+        normalMatrix=billboardNormals;
+    }
+#endif // JET_MESH_INSTANCING
     // Object-local lighting precompute eligibility.
     //
     // The view-space normal transform exists only so that the rasterizer
@@ -1155,8 +1272,15 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
     // Emissive meshes have no consumer of normals or Lambert brightness.
     // Custom shaders remain conservative: their inputs must be preserved.
     bool unlitObject = !meshSource->triangles.empty();
+#if JET_MESH_INSTANCING
+    for (size_t i=0;i<meshSource->triangles.size();++i) {
+        const auto& triangle = meshSource->triangles[i];
+        const Material* m = overrideMat ? overrideMat :
+            (triangleMaterials && triangleMaterials[i] ? triangleMaterials[i] : triangle.material);
+#else
     for (const auto& triangle : meshSource->triangles) {
         const Material* m = triangle.material;
+#endif // JET_MESH_INSTANCING
         if (!m || m->shader || (!m->emissive &&
             m->shadingMode != ShadingMode::UNLIT &&
             m->shadingMode != ShadingMode::WATER_REFLECT &&
@@ -1185,10 +1309,19 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
         // (view-space) and there's no place to feed cached brightness
         // back in. FLAT and GOURAUD both consume a per-triangle/vertex
         // scalar brightness so they slot the cache in cleanly.
+#if JET_MESH_INSTANCING
+        for (size_t i=0;i<meshSource->triangles.size();++i) {
+            const auto& tri=meshSource->triangles[i];
+            const Material* material=overrideMat ? overrideMat :
+                (triangleMaterials && triangleMaterials[i] ? triangleMaterials[i] : tri.material);
+            if (!material) continue;
+            if (material->specular != 0 || material->shadingMode == ShadingMode::PHONG) {
+#else
         for (const auto& tri : meshSource->triangles) {
             if (!tri.material) continue;
             if (tri.material->specular != 0 ||
                 tri.material->shadingMode == ShadingMode::PHONG) {
+#endif // JET_MESH_INSTANCING
                 allNonSpecular = false;
                 break;
             }
@@ -1202,7 +1335,12 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
             // would shift slightly compared to the renderer's path. In
             // practice diffuse is a per-shading-style constant on every
             // material in this project (255 default).
+#if JET_MESH_INSTANCING
+            const Material* m0 = overrideMat ? overrideMat :
+                (triangleMaterials && triangleMaterials[0] ? triangleMaterials[0] : meshSource->triangles[0].material);
+#else
             const Material* m0 = meshSource->triangles[0].material;
+#endif // JET_MESH_INSTANCING
             if (m0) objDiffuseCoef = m0->diffuse;
 
             // Transform worldLightDir into object-local space. With M
@@ -1219,6 +1357,15 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
                     (int32_t)(((int64_t)Lw.x * objM02 + (int64_t)Lw.y * objM12 + (int64_t)Lw.z * objM22) / FIXED_POINT_SCALE));
             } else {
                 objLightDir = Lw;
+#if JET_MESH_INSTANCING
+            }
+            if (instance) {
+                const Vector3 L=objLightDir;
+                const float* m=instance->transform.basis;
+                objLightDir={(int32_t)(m[0]*L.x+m[3]*L.y+m[6]*L.z),
+                             (int32_t)(m[1]*L.x+m[4]*L.y+m[7]*L.z),
+                             (int32_t)(m[2]*L.x+m[5]*L.y+m[8]*L.z)};
+#endif // JET_MESH_INSTANCING
             }
         }
     }
@@ -1240,7 +1387,11 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
         // is locked to face the camera in yaw. Pitch/roll still apply
         // through the camera transform so the billboard appears
         // tilted exactly as a vertical real object would.
+#if JET_MESH_INSTANCING
+        if (isBillboard && !instance) {
+#else
         if (isBillboard) {
+#endif // JET_MESH_INSTANCING
             pos.assign((pos.x * camCosY - pos.z * camSinY) / FIXED_POINT_SCALE,
                         pos.y,
                        (pos.x * camSinY + pos.z * camCosY) / FIXED_POINT_SCALE);
@@ -1291,9 +1442,15 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
         if (!objectLocalLight) {
             const float fnx = (float)normal.x, fny = (float)normal.y, fnz = (float)normal.z;
             normal.assign(
+#if JET_MESH_INSTANCING
+                (int32_t)(fnx * normalMatrix[0] + fny * normalMatrix[1] + fnz * normalMatrix[2]),
+                (int32_t)(fnx * normalMatrix[3] + fny * normalMatrix[4] + fnz * normalMatrix[5]),
+                (int32_t)(fnx * normalMatrix[6] + fny * normalMatrix[7] + fnz * normalMatrix[8]));
+#else
                 (int32_t)(fnx * fM00 + fny * fM01 + fnz * fM02),
                 (int32_t)(fnx * fM10 + fny * fM11 + fnz * fM12),
                 (int32_t)(fnx * fM20 + fny * fM21 + fnz * fM22));
+#endif // JET_MESH_INSTANCING
         }
 #endif
 
@@ -1314,6 +1471,16 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
     }
 
 #if SORT_TRIANGLES
+#if JET_MESH_INSTANCING
+    // Sort transient indices, never a shared immutable prototype's triangles.
+    static std::vector<uint32_t> triangleOrder;
+    triangleOrder.resize(meshSource->triangles.size());
+    for (size_t i=0;i<triangleOrder.size();++i) triangleOrder[i]=(uint32_t)i;
+    std::sort(triangleOrder.begin(),triangleOrder.end(),[&](uint32_t ai,uint32_t bi) {
+        const auto& a=meshSource->triangles[ai]; const auto& b=meshSource->triangles[bi];
+        return (transformedVertices[a.v1].position.z+transformedVertices[a.v2].position.z+transformedVertices[a.v3].position.z)/3 >
+               (transformedVertices[b.v1].position.z+transformedVertices[b.v2].position.z+transformedVertices[b.v3].position.z)/3;
+#else
     // Sort the triangles by depth
     std::sort(meshSource->triangles.begin(), meshSource->triangles.end(), [&](const Object::Triangle& a, const Object::Triangle& b) {
         const auto& v1 = transformedVertices[a.v1];
@@ -1323,6 +1490,7 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
         int32_t z2 = v2.position.z;
         int32_t z3 = v3.position.z;
         return (z1 + z2 + z3) / 3 > (transformedVertices[b.v1].position.z + transformedVertices[b.v2].position.z + transformedVertices[b.v3].position.z) / 3;
+#endif // JET_MESH_INSTANCING
     });
 #endif
 
@@ -1477,6 +1645,10 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
 #if MAX_PICK_QUERIES > 0
         rt.sourceObject        = obj;
         rt.sourceTriangleIndex = srcTriIdx;
+#if JET_MESH_INSTANCING
+        rt.sourceMesh = meshSource;
+        rt.sourceInstanceIndex = instance ? (int32_t)(draw-1) : -1;
+#endif // JET_MESH_INSTANCING
 #endif
         renderQueue.push_back(rt);
         // Preserve stable bucket ordering and the special draw bands, including
@@ -1509,7 +1681,16 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
 
     // Render triangles with backface culling and shading
     for (size_t triIdx = 0; triIdx < meshSource->triangles.size(); ++triIdx) {
+#if JET_MESH_INSTANCING
+#if SORT_TRIANGLES
+        const size_t sourceIndex=triangleOrder[triIdx];
+#else
+        const size_t sourceIndex=triIdx;
+#endif
+        const auto& triangle = meshSource->triangles[sourceIndex];
+#else
         const auto& triangle = meshSource->triangles[triIdx];
+#endif // JET_MESH_INSTANCING
         const auto& vA = transformedVertices[triangle.v1];
         const auto& vB = transformedVertices[triangle.v2];
         const auto& vC = transformedVertices[triangle.v3];
@@ -1531,18 +1712,34 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
         #define JET_UV_ARGS(A, B, C)
 #endif
 #if MAX_PICK_QUERIES > 0
+#if JET_MESH_INSTANCING
+        const int32_t srcTriIdx = (int32_t)sourceIndex;
+#else
         const int32_t srcTriIdx = (int32_t)triIdx;
+#endif // JET_MESH_INSTANCING
         #define JET_EMIT_TRI(A, B, C, M, U, V, W)  emitTri((A), (B), (C), (M) JET_UV_ARGS(U, V, W), srcTriIdx)
 #else
         #define JET_EMIT_TRI(A, B, C, M, U, V, W)  emitTri((A), (B), (C), (M) JET_UV_ARGS(U, V, W))
 #endif
 
+#if JET_MESH_INSTANCING
+        Material* replacement=overrideMat ? overrideMat :
+            (triangleMaterials ? triangleMaterials[sourceIndex] : nullptr);
+        Material* effectiveMat=replacement ? replacement : triangle.material;
+        if (triangle.colorBaked && !replacement) {
+            s_bakedMat.color=triangle.bakedColor;
+            effectiveMat=&s_bakedMat;
+        }
+#endif // JET_MESH_INSTANCING
         if (outMask == 0 && farMask == 0) {       // fast path: fully inside
+#if JET_MESH_INSTANCING
+#else
             Material* effectiveMat = triangle.material;
             if (triangle.colorBaked) {
                 s_bakedMat.color = triangle.bakedColor;
                 effectiveMat = &s_bakedMat;
             }
+#endif // JET_MESH_INSTANCING
             JET_EMIT_TRI(vA, vB, vC, effectiveMat,
                          &meshSource->vertices[triangle.v1].uv,
                          &meshSource->vertices[triangle.v2].uv,
@@ -1557,7 +1754,11 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
         const Vector3 cC = cameraPosition(meshSource->vertices[triangle.v3].position);
         RenderVertex clippedInput[3] = { vA.expand(), vB.expand(), vC.expand() };
 #if TEXTURE_MAPPING
+#if JET_MESH_INSTANCING
+        if (effectiveMat && effectiveMat->diffuseMap) {
+#else
         if (!triangle.colorBaked && triangle.material && triangle.material->diffuseMap) {
+#endif // JET_MESH_INSTANCING
             clippedInput[0].uv = meshSource->vertices[triangle.v1].uv;
             clippedInput[1].uv = meshSource->vertices[triangle.v2].uv;
             clippedInput[2].uv = meshSource->vertices[triangle.v3].uv;
@@ -1606,14 +1807,22 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
             polyN = farN;
             for (int i = 0; i < polyN; ++i) poly[i] = farPoly[i];
         }
+#if JET_MESH_INSTANCING
+#else
         Material* effectiveMat = triangle.material;
         if (triangle.colorBaked) { s_bakedMat.color = triangle.bakedColor; effectiveMat = &s_bakedMat; }
+#endif // JET_MESH_INSTANCING
         for (int i = 1; i + 1 < polyN; ++i) {
             JET_EMIT_TRI(poly[0], poly[i], poly[i+1], effectiveMat, &poly[0].uv, &poly[i].uv, &poly[i+1].uv);
         }
         #undef JET_EMIT_TRI
         #undef JET_UV_ARGS
     }
+#if JET_MESH_INSTANCING
+
+    } // own mesh and instances
+
+#endif // JET_MESH_INSTANCING
 }
 
 } // namespace Renderer

@@ -307,3 +307,17 @@ at normal and very large projected sizes, with colour/depth buffer guards.
 The film's desktop-quality CMake target runs it with `JET_PERSPECTIVE_DEPTH=1`,
 `Z_BUFFERING=1`, `FAST_Z=0` and full-width buffers. Other builds retain their
 original affine depth path unless explicitly enabled.
+
+## Shared mesh instances
+
+`mesh_instances.cpp` compares shared placements against expanded independent
+geometry across 144 frames, shading modes, clipping, billboards, owner rotation,
+LOD, fades and culling. It also checks immutable topology, material overrides,
+rejected nesting/tables, baking, copy isolation and reference-counted release.
+With `MAX_PICK_QUERIES>0` it checks owner/prototype/instance/triangle attribution.
+
+Build it with the Scene source list above and `JET_MESH_INSTANCING=1` in the
+configuration of every translation unit. Run both `SORT_TRIANGLES=0` and `1`,
+and enable texturing and picking for the expanded compatibility check. The
+examples repository's `esp32-mesh-instancing/tests` CMake project builds both
+configurations and also verifies its real scene with concurrent raster bands.

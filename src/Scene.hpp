@@ -258,10 +258,19 @@ private:
         // into the per-pixel screen-door alpha at raster time.
         uint8_t objAlpha;
 #if MAX_PICK_QUERIES > 0
+#if JET_MESH_INSTANCING
+        // Owner, actual mesh and original triangle index for pick attribution.
+        // Carried through the painter sort without mutating source geometry.
+#else
         // Source object + ORIGINAL triangle index (in obj->triangles) for
         // pick attribution. Carried through the painter sort.
+#endif // JET_MESH_INSTANCING
         Object* sourceObject;
         int32_t sourceTriangleIndex;
+#if JET_MESH_INSTANCING
+        const Object* sourceMesh;
+        int32_t sourceInstanceIndex;
+#endif // JET_MESH_INSTANCING
 #endif
     };
     std::vector<RenderTri> renderQueue;
@@ -323,7 +332,11 @@ private:
                       int32_t camCosY, int32_t camSinY,
                       int32_t camCosZ, int32_t camSinZ,
                       uint8_t objAlpha,
+#if JET_MESH_INSTANCING
+                      const Object* meshSource = nullptr);
+#else
                       Object* meshSource = nullptr);
+#endif // JET_MESH_INSTANCING
     void reconstructCheckerboard();
     void clearBuffers();
 

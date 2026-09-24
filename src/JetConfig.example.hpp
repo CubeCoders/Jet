@@ -23,6 +23,15 @@
 #define JET32_WORLD_SCALE 8
 
 // ---------------------------------------------------------------------------
+// Shared immutable geometry
+// ---------------------------------------------------------------------------
+
+// Compile Object::SharedMesh / addInstance() and the instance-aware renderer.
+// Reduces duplicated mesh storage; every placement still transforms and draws.
+// Leave off to retain the ordinary Object layout and renderer cost.
+#define JET_MESH_INSTANCING 0
+
+// ---------------------------------------------------------------------------
 // Core rasterizer options
 // ---------------------------------------------------------------------------
 
