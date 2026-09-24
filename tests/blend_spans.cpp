@@ -132,26 +132,57 @@ int runBlendSpanChecks() {
         }
     // Scaled and clipped sprite rows, including the non-exact fp8 step for
     // scale 3 and spans longer than the internal staging tile.
-    for (int scale = 2; scale <= 5; ++scale) for (int offset = 0; offset < 8; ++offset)
+    for (int direction : {-1, 1}) for (int scale = 1; scale <= 5; ++scale) for (int offset = 0; offset < 8; ++offset)
         for (int startX : {0, 1, 19}) for (int flags = 0; flags < 4; ++flags)
             for (int alpha : {1, 127, 255}) for (auto mode : {RGB565BlendMode::Alpha255, RGB565BlendMode::Add}) {
                 for (int i = 0; i < 272; ++i) input[i] = i % 7 ? (uint16_t)(i * 911) : 0x7bef;
                 for (int i = 0; i < 544; ++i) actual[i] = expected[i] = (uint16_t)(i * 731 + 13);
+                const int step = direction * (256 / scale);
+                const int start = direction > 0 ? startX * step : (272 << 8) - 1 + startX * step;
                 for (int i = 0; i < 241; ++i)
-                    reference(expected + offset + i, input + (((i + startX) * (256 / scale)) >> 8),
+                    reference(expected + offset + i, input + ((start + i * step) >> 8),
                               1, 0, (uint8_t)alpha, mode, (uint8_t)flags, 0x7bef);
-                blendRGB565ScaledSpan(actual + offset, input, 241, startX * (256 / scale),
-                                     256 / scale, (uint8_t)alpha, mode, (uint8_t)flags, 0x7bef);
+                blendRGB565ScaledSpan(actual + offset, input, 241, start,
+                                     step, (uint8_t)alpha, mode, (uint8_t)flags, 0x7bef);
                 if (!compare(544, 30000 + scale)) return 1;
             }
+    for (int direction : {-1, 1}) for (int delta = -15; delta <= 15; ++delta) for (int flags = 0; flags < 4; ++flags)
+        for (auto mode : {RGB565BlendMode::Alpha255, RGB565BlendMode::Add}) {
+            for (int i = 0; i < 544; ++i) actual[i] = expected[i] = (uint16_t)(i * 971 + 1234);
+            const int start = direction > 0 ? 0 : 63 * 85 + 255;
+            for (int i = 0; i < 64; ++i)
+                reference(expected + 32 + i, expected + 32 + delta + ((start + i * direction * 85) >> 8),
+                          1, 0, 173, mode, (uint8_t)flags, 0);
+            blendRGB565ScaledSpan(actual + 32, actual + 32 + delta, 64, start, direction * 85, 173, mode, (uint8_t)flags, 0);
+            if (!compare(544, 40000 + delta)) return 1;
+        }
+    // Mirrored rows cross the symmetry axis and staging-tile boundary while
+    // retaining the original fp8 phase, alignment, key and blending rules.
+    for (int sourceWidth : {8, 32, 67}) for (int scale : {1, 2, 3, 4})
+        for (int offset = 0; offset < 8; ++offset)
+            for (int startX : {0, 1, sourceWidth * scale - 1, sourceWidth * scale, 2 * sourceWidth * scale - 5})
+                for (int flags = 0; flags < 4; ++flags)
+                    for (int alpha : {1, 127, 255}) for (auto mode : {RGB565BlendMode::Alpha255, RGB565BlendMode::Add}) {
+                        for (int i = 0; i < 272; ++i) input[i] = i % 7 ? (uint16_t)(i * 911) : 0x7bef;
+                        for (int i = 0; i < 544; ++i) actual[i] = expected[i] = (uint16_t)(i * 731 + 13);
+                        const int count = std::min(480, 2 * sourceWidth * scale - startX);
+                        for (int i = 0; i < count; ++i) {
+                            int x = ((startX + i) * (256 / scale)) >> 8;
+                            if (x >= sourceWidth) x = 2 * sourceWidth - 1 - x;
+                            reference(expected + offset + i, input + x, 1, 0, (uint8_t)alpha, mode, (uint8_t)flags, 0x7bef);
+                        }
+                        blendRGB565MirroredSpan(actual + offset, input, sourceWidth, count,
+                            startX * (256 / scale), 256 / scale, (uint8_t)alpha, mode, (uint8_t)flags, 0x7bef);
+                        if (!compare(544, 50000 + sourceWidth)) return 1;
+                    }
     for (int delta = -15; delta <= 15; ++delta) for (int flags = 0; flags < 4; ++flags)
         for (auto mode : {RGB565BlendMode::Alpha255, RGB565BlendMode::Add}) {
             for (int i = 0; i < 544; ++i) actual[i] = expected[i] = (uint16_t)(i * 971 + 1234);
             for (int i = 0; i < 64; ++i)
-                reference(expected + 32 + i, expected + 32 + delta + ((i * 85) >> 8),
+                reference(expected + 32 + i, expected + 32 + delta + (i < 32 ? i : 63 - i),
                           1, 0, 173, mode, (uint8_t)flags, 0);
-            blendRGB565ScaledSpan(actual + 32, actual + 32 + delta, 64, 0, 85, 173, mode, (uint8_t)flags, 0);
-            if (!compare(544, 40000 + delta)) return 1;
+            blendRGB565MirroredSpan(actual + 32, actual + 32 + delta, 32, 64, 0, 256, 173, mode, (uint8_t)flags, 0);
+            if (!compare(544, 60000 + delta)) return 1;
         }
     std::printf("Blend spans: %llu values/guards checked, zero errors\n", (unsigned long long)checked);
 #if defined(ESP_PLATFORM)

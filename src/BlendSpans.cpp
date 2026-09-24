@@ -70,8 +70,8 @@ alignas(16) static const DRAM_ATTR uint32_t channelMasks[8] = {
     "l32i %[tmp], %[params], 16\n\tbbsi %[tmp], 5, 6f\n\t" \
     JET_SHIFT("0") \
     "ee.vmul.u16 q5, q5, q2\n\tee.vmul.u16 q6, q6, q3\n\t" \
-    "ee.vadds.s16 q5, q5, q6\n\t" \
-    "addi %[tmp], %[params], 32\n\tee.vld.128.ip q6, %[tmp], 0\n\t" \
+    "addi %[tmp], %[params], 32\n\t" \
+    "ee.vadds.s16.ld.incp q6, %[tmp], q5, q5, q6\n\t" \
     "l32i %[tmp], %[params], 12\n\twsr %[tmp], sar\n\t" \
     "ee.vmul.u16 q5, q5, q6\n\t" \
     "j 7f\n\t6:\n\tee.vadds.s16 q5, q5, q6\n\t7:\n\t" \
@@ -132,6 +132,55 @@ static inline __attribute__((always_inline)) void blendBlocks(
           [src] "+&r"(src), [bg] "+&r"(background), [dst] "+&r"(dst)
         : [params] "r"(&p), [masks] "r"(channelMasks) : "memory"
     );
+}
+// Sprite additive blending needs no weights or normalization. Keep both
+// channel masks and the colour key in QR registers for the entire span.
+// Each channel sum is <=126, so signed saturating add cannot alter it.
+static inline __attribute__((always_inline)) void addBlocks(
+    uint16_t* dst, const uint16_t* src, const uint16_t* background,
+    const KernelParams& p, int blocks) {
+    uint32_t savedSar, tmp;
+#define JET_ADD_CHANNEL(SHIFT, MASK) \
+    JET_SHIFT(SHIFT) \
+    "ee.vsr.32 q5, q0\n\tee.vsr.32 q6, q1\n\t" \
+    "ee.andq q5, q5, " MASK "\n\tee.andq q6, q6, " MASK "\n\t" \
+    "ee.vadds.s16 q5, q5, q6\n\tee.vmin.s16 q5, q5, " MASK "\n\t" \
+    "ee.vsl.32 q5, q5\n\t"
+    __asm__ volatile (
+        "rsr %[saved], sar\n\t"
+        "mov %[tmp], %[masks]\n\tee.vld.128.ip q2, %[tmp], 16\n\t"
+        "ee.vld.128.ip q3, %[tmp], 0\n\t"
+        "l32i %[tmp], %[params], 20\n\t" JET_BROADCAST("q4")
+        "9:\n\tee.vld.128.ip q0, %[src], 0\n\t"
+        "l32i %[tmp], %[params], 16\n\tbbci %[tmp], 4, 1f\n\t"
+        "addi %[tmp], %[src], 16\n\tee.vld.128.ip q5, %[tmp], 0\n\t"
+        "addi %[tmp], %[src], -1\n\tee.srcxxp.2q q5, q0, %[tmp], %[tmp]\n\t"
+        "1:\n\tee.vld.128.ip q1, %[bg], 0\n\t"
+        "l32i %[tmp], %[params], 16\n\tbbci %[tmp], 0, 1f\n\t"
+        "ee.orq q5, q1, q1\n\tee.vunzip.8 q1, q5\n\tee.vzip.8 q5, q1\n\t"
+        "1:\n\t"
+        JET_ADD_CHANNEL("11", "q2")
+        "ee.orq q7, q5, q5\n\t"
+        JET_ADD_CHANNEL("5", "q3")
+        "ee.orq q7, q7, q5\n\t"
+        // Blue is already in the low five bits; no shifts are needed.
+        "ee.andq q5, q0, q2\n\tee.andq q6, q1, q2\n\t"
+        "ee.vadds.s16 q5, q5, q6\n\tee.vmin.s16 q5, q5, q2\n\t"
+        "ee.orq q7, q7, q5\n\t"
+        "l32i %[tmp], %[params], 16\n\tbbci %[tmp], 1, 2f\n\t"
+        "ee.vcmp.eq.s16 q5, q0, q4\n\tee.andq q6, q1, q5\n\t"
+        "ee.notq q5, q5\n\tee.andq q7, q7, q5\n\tee.orq q7, q7, q6\n\t"
+        "2:\n\tbbci %[tmp], 0, 3f\n\t"
+        "ee.orq q5, q7, q7\n\tee.vunzip.8 q7, q5\n\tee.vzip.8 q5, q7\n\t"
+        "3:\n\tee.vst.128.ip q7, %[dst], 16\n\t"
+        "bbsi %[tmp], 6, 8f\n\taddi %[src], %[src], 16\n\t8:\n\t"
+        "bbsi %[tmp], 2, 8f\n\taddi %[bg], %[bg], 16\n\t8:\n\t"
+        "addi %[blocks], %[blocks], -1\n\tbnez %[blocks], 9b\n\t"
+        "wsr %[saved], sar\n\t"
+        : [saved] "=&r"(savedSar), [tmp] "=&r"(tmp), [blocks] "+&r"(blocks),
+          [src] "+&r"(src), [bg] "+&r"(background), [dst] "+&r"(dst)
+        : [params] "r"(&p), [masks] "r"(channelMasks) : "memory");
+#undef JET_ADD_CHANNEL
 }
 #undef JET_CHANNEL
 #undef JET_SHIFT
@@ -197,7 +246,8 @@ void PERF_CRITICAL blendRGB565Span(uint16_t* dst, const uint16_t* src, int count
                 (add ? 32u : 0u) | (!src ? 64u : 0u), repeat16(key), {}, {}};
         std::fill(p.normalizationLanes, p.normalizationLanes + 4, p.normalizer);
         const int pixels = (count - (matchingAlignment ? 0 : 8)) & ~7;
-        blendBlocks(dst, src ? src : constant, constantBG ? constant : dst, p, pixels / 8);
+        if (add) addBlocks(dst, src ? src : constant, constantBG ? constant : dst, p, pixels / 8);
+        else blendBlocks(dst, src ? src : constant, constantBG ? constant : dst, p, pixels / 8);
         dst += pixels; if (src) src += pixels; count -= pixels;
     }
 #endif
@@ -250,31 +300,41 @@ void PERF_CRITICAL RGB565ConstantBlend::blend(uint16_t* dst, const uint16_t* src
         const int pixels = blocks * 8;
         uint32_t saved, tmp;
 #define CSHIFT(N) "movi %[tmp], " N "\n\twsr %[tmp], sar\n\t"
+#define CWEIGHT(OFF) \
+        "addi %[tmp], %[params], " OFF "\n\t" \
+        "ee.vmul.u16.ld.incp q3, %[tmp], q5, q5, q2\n\t" \
+        CSHIFT("16") "ee.vadds.s16 q5, q5, q3\n\t" \
+        "ee.vmul.u16 q5, q5, q6\n\t"
 #define CCHANNEL(SH,OFF,MASK) \
         CSHIFT(SH) "ee.vsr.32 q5, q0\n\t" \
-        "addi %[tmp], %[masks], " MASK "\n\tee.vld.128.ip q4, %[tmp], 0\n\t" \
-        "ee.andq q5, q5, q4\n\t" CSHIFT("0") \
-        "ee.vmul.u16 q5, q5, q2\n\t" \
-        "addi %[tmp], %[params], " OFF "\n\tee.vld.128.ip q3, %[tmp], 0\n\t" \
-        "ee.vadds.s16 q5, q5, q3\n\t" CSHIFT("16") \
-        "ee.vmul.u16 q5, q5, q6\n\t" CSHIFT(SH) "ee.vsl.32 q5, q5\n\t"
+        CSHIFT("0") "ee.andq q5, q5, " MASK "\n\t" \
+        CWEIGHT(OFF) CSHIFT(SH) "ee.vsl.32 q5, q5\n\t"
         // Own all vector state inside this block; restore the scalar shift
-        // register before returning to C++. No QR state crosses calls.
+        // register before returning to C++. Keep both channel masks live
+        // across the span and fuse each multiply with its constant load.
+        // The signed add is exact: every weighted sum is <= 63*256.
+        // No QR state crosses calls; this must not nest in a hardware loop.
         __asm__ volatile (
             "rsr %[saved], sar\n\t"
             "mov %[tmp], %[params]\n\tee.vld.128.ip q2, %[tmp], 0\n\t"
             "addi %[tmp], %[params], 64\n\tee.vld.128.ip q6, %[tmp], 0\n\t"
-            "9:\n\tee.vld.128.ip q0, %[input], 16\n\t"
-            CCHANNEL("11","16","0") "ee.orq q7, q5, q5\n\t"
-            CCHANNEL("5","32","16") "ee.orq q7, q7, q5\n\t"
-            CCHANNEL("0","48","0") "ee.orq q7, q7, q5\n\t"
+            "mov %[tmp], %[masks]\n\tee.vld.128.ip q1, %[tmp], 16\n\t"
+            "ee.vld.128.ip q4, %[tmp], 0\n\t"
+            "loopnez %[blocks], .Lconstant_end%=\n\t"
+            "ee.vld.128.ip q0, %[input], 16\n\t"
+            CCHANNEL("11","16","q1") "ee.orq q7, q5, q5\n\t"
+            CCHANNEL("5","32","q4") "ee.orq q7, q7, q5\n\t"
+            // Blue occupies the low bits of each halfword already.
+            CSHIFT("0") "ee.andq q5, q0, q1\n\t"
+            CWEIGHT("48") "ee.orq q7, q7, q5\n\t"
             "ee.vst.128.ip q7, %[dst], 16\n\t"
-            "addi %[blocks], %[blocks], -1\n\tbnez %[blocks], 9b\n\t"
+            ".Lconstant_end%=:\n\t"
             "wsr %[saved], sar\n\t"
             : [saved] "=&r"(saved), [tmp] "=&r"(tmp), [blocks] "+&r"(blocks),
               [input] "+&r"(input), [dst] "+&r"(dst)
             : [params] "r"(lanes), [masks] "r"(channelMasks) : "memory");
 #undef CCHANNEL
+#undef CWEIGHT
 #undef CSHIFT
         count -= pixels;
         while (count) scalar();
@@ -284,31 +344,69 @@ void PERF_CRITICAL RGB565ConstantBlend::blend(uint16_t* dst, const uint16_t* src
     blendRGB565Span(dst, background ? src : nullptr, count, color, alpha,
         RGB565BlendMode::Alpha256, background ? BlendConstantBackground : 0);
 }
-void PERF_CRITICAL blendRGB565ScaledSpan(uint16_t* dst, const uint16_t* src, int count,
-                                        int sourceX256, int step256, uint8_t alpha,
-                                        RGB565BlendMode mode, uint8_t flags, uint16_t key) {
+namespace {
+template<bool Mirror>
+JET_BLEND_INLINE void scaledSpan(uint16_t* dst, const uint16_t* src, int count,
+                                int sourceX256, int step256, uint8_t alpha,
+                                RGB565BlendMode mode, uint8_t flags, uint16_t key,
+                                int sourceWidth = 0) {
     if (count <= 0) return;
-    const uintptr_t first = (uintptr_t)(src + (sourceX256 >> 8));
-    const uintptr_t last = (uintptr_t)(src +
-        (((int64_t)sourceX256 + (int64_t)(count - 1) * step256) >> 8) + 1);
+    int firstX = sourceX256 >> 8;
+    int lastX = (int)(((int64_t)sourceX256 + (int64_t)(count - 1) * step256) >> 8);
+    if constexpr (Mirror) {
+        // Conservative bounds also cover a span that crosses the symmetry
+        // axis. Framebuffer-backed textures must preserve write feedback.
+        firstX = 0;
+        lastX = sourceWidth - 1;
+    }
+    const uintptr_t first = (uintptr_t)(src + std::min(firstX, lastX));
+    const uintptr_t last = (uintptr_t)(src + std::max(firstX, lastX) + 1);
     if (first < (uintptr_t)(dst + count) && (uintptr_t)dst < last) {
-        // A texture can refer into the framebuffer. Staging would change
-        // feedback from earlier writes, so keep the original forward order.
-        for (int i = 0; i < count; ++i, sourceX256 += step256)
-            blendRGB565Span(dst + i, src + (sourceX256 >> 8), 1, 0, alpha, mode, flags, key);
+        for (int i = 0; i < count; ++i, sourceX256 += step256) {
+            int x = sourceX256 >> 8;
+            if constexpr (Mirror) {
+                if (x >= sourceWidth) x = 2 * sourceWidth - 1 - x;
+            }
+            blendRGB565Span(dst + i, src + x, 1, 0, alpha, mode, flags, key);
+        }
         return;
     }
-    // Stage only a small row fragment in internal stack RAM. Matching the
-    // destination phase makes every full vector load/store aligned, including
-    // sprites clipped at either screen edge. No full-size expanded texture.
+    // Stage a small row fragment in internal stack RAM. Matching the
+    // destination phase keeps full vector loads/stores aligned. Mirrored
+    // halves share the same tile to avoid two SIMD setups per row.
     alignas(16) uint16_t tile[128 + 8];
     while (count > 0) {
         const int n = std::min(count, 128);
         uint16_t* pixels = tile + (((uintptr_t)dst & 15) / 2);
-        for (int i = 0; i < n; ++i, sourceX256 += step256)
-            pixels[i] = src[sourceX256 >> 8];
+        if constexpr (Mirror) {
+            const int edge256 = sourceWidth << 8;
+            int forward = 0;
+            if (sourceX256 < edge256)
+                forward = step256 ? std::min(n, (edge256 - sourceX256 + step256 - 1) / step256) : n;
+            int x256 = sourceX256;
+            for (int i = 0; i < forward; ++i, x256 += step256)
+                pixels[i] = src[x256 >> 8];
+            x256 = 2 * edge256 - 1 - x256;
+            for (int i = forward; i < n; ++i, x256 -= step256)
+                pixels[i] = src[x256 >> 8];
+            sourceX256 += n * step256;
+        } else {
+            for (int i = 0; i < n; ++i, sourceX256 += step256)
+                pixels[i] = src[sourceX256 >> 8];
+        }
         blendRGB565Span(dst, pixels, n, 0, alpha, mode, flags, key);
         dst += n; count -= n;
     }
+}
+} // namespace
+void PERF_CRITICAL blendRGB565ScaledSpan(uint16_t* dst, const uint16_t* src, int count,
+                                        int sourceX256, int step256, uint8_t alpha,
+                                        RGB565BlendMode mode, uint8_t flags, uint16_t key) {
+    scaledSpan<false>(dst, src, count, sourceX256, step256, alpha, mode, flags, key);
+}
+void PERF_CRITICAL blendRGB565MirroredSpan(uint16_t* dst, const uint16_t* src, int sourceWidth,
+                                          int count, int sourceX256, int step256, uint8_t alpha,
+                                          RGB565BlendMode mode, uint8_t flags, uint16_t key) {
+    scaledSpan<true>(dst, src, count, sourceX256, step256, alpha, mode, flags, key, sourceWidth);
 }
 } // namespace Renderer

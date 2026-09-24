@@ -148,6 +148,8 @@ class Rasterizer
         PickResult*      pickResults = nullptr;
         int              pickQueryCount = 0;     ///< Number of slots in use this frame (0..MAX_PICK_QUERIES).
         Object*          currentPickObject = nullptr;       ///< Set by Scene before each drawTriangle for hit attribution.
+        const Object*    currentPickMesh = nullptr;
+        int32_t          currentPickInstanceIndex = -1;
         int32_t          currentPickTriangleIndex = -1;     ///< Source-mesh triangle index for hit attribution.
 #endif
 

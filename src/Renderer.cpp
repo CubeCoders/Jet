@@ -5,6 +5,7 @@
 #include "FastMath.hpp"
 #include "TriangleSpans.hpp"
 #include "BlendSpans.hpp"
+#include "TextureSpans.hpp"
 #include <type_traits>
 
 #if defined(CHECKERBOARD_MODE) && CHECKERBOARD_MODE && defined(FIELD_BUFFERS) && FIELD_BUFFERS
@@ -101,32 +102,22 @@ static inline void fillRGB565Span(uint16_t* framebuffer, int32_t bufferIndex, in
 
         const int32_t quads = pairs >> 2;
         if (quads > 0) {
+            // GCC will not form a hardware loop around inline asm. Keep the
+            // vector setup and explicit loop together, with no nested LOOP.
+            // Early-clobber keeps the advancing pointer distinct from inputs.
+            const int stride = 16;
             __asm__ volatile (
                 "ee.movi.32.q q0, %[v], 0\n\t"
                 "ee.movi.32.q q0, %[v], 1\n\t"
                 "ee.movi.32.q q0, %[v], 2\n\t"
                 "ee.movi.32.q q0, %[v], 3\n\t"
-                : : [v] "r"(color32)
+                "loopnez %[n], .Ljet_fill_end_%=\n\t"
+                "ee.vst.128.xp q0, %[p], %[s]\n\t"
+                ".Ljet_fill_end_%=:\n\t"
+                : [p] "+&r"(out)
+                : [s] "r"(stride), [n] "r"(quads), [v] "r"(color32)
+                : "memory"
             );
-            const int stride = 16;
-            // 4x-unrolled: one loop iteration retires 64 bytes. The asm
-            // blocks are volatile with a memory clobber, so GCC can't
-            // unroll them itself — do it by hand to amortise the branch.
-            for (int32_t i = quads >> 2; i > 0; --i) {
-                __asm__ volatile (
-                    "ee.vst.128.xp q0, %[p], %[s]\n\t"
-                    "ee.vst.128.xp q0, %[p], %[s]\n\t"
-                    "ee.vst.128.xp q0, %[p], %[s]\n\t"
-                    "ee.vst.128.xp q0, %[p], %[s]\n\t"
-                    : [p] "+r"(out) : [s] "r"(stride) : "memory"
-                );
-            }
-            for (int32_t i = quads & 3; i > 0; --i) {
-                __asm__ volatile (
-                    "ee.vst.128.xp q0, %[p], %[s]\n\t"
-                    : [p] "+r"(out) : [s] "r"(stride) : "memory"
-                );
-            }
             pairs -= quads << 2;
         }
     }
@@ -679,6 +670,25 @@ namespace Renderer
             && diffuseMap->height > 0 && diffuseMap->height <= 1024
             && (diffuseMap->width & (diffuseMap->width-1)) == 0
             && (diffuseMap->height & (diffuseMap->height-1)) == 0;
+        // Animated palettes retain Texture::getPixel's offset/modulo semantics.
+        const bool directIndexed8 = diffuseMap && diffuseMap->data && diffuseMap->palette
+            && diffuseMap->paletteSize <= 0 && diffuseMap->addressMode == WRAP
+            && diffuseMap->width > 0 && diffuseMap->width <= 1024
+            && diffuseMap->height > 0 && diffuseMap->height <= 1024
+            && (diffuseMap->width & (diffuseMap->width-1)) == 0
+            && (diffuseMap->height & (diffuseMap->height-1)) == 0;
+        const uintptr_t textureStart = (directRGB565 || directIndexed8) ? (uintptr_t)diffuseMap->data : 0;
+        const uintptr_t frameStart = (uintptr_t)framebuffer;
+        const size_t frameBytes = size_t(screenWidth / (HALF_WIDTH_BUFFERS ? 2 : 1))
+            * (screenHeight / (FIELD_BUFFERS ? 2 : 1)) * sizeof(uint16_t);
+        const bool textureFeedback = (directRGB565 || directIndexed8)
+            && ((textureStart < frameStart + frameBytes
+                && frameStart < textureStart + size_t(diffuseMap->width) * diffuseMap->height
+                    * (directIndexed8 ? sizeof(uint8_t) : sizeof(uint16_t)))
+                // Palette entries can also alias the output. Use the complete
+                // uint8 index domain conservatively, without reading it here.
+                || (directIndexed8 && (uintptr_t)diffuseMap->palette < frameStart + frameBytes
+                    && frameStart < (uintptr_t)diffuseMap->palette + 256 * sizeof(uint16_t)));
     #endif
 #endif
 
@@ -1142,6 +1152,8 @@ namespace Renderer
                             r.hit           = true;
                             r.object        = currentPickObject;
                             r.triangleIndex = currentPickTriangleIndex;
+                            r.mesh = currentPickMesh;
+                            r.instanceIndex = currentPickInstanceIndex;
                             r.depth         = pickZ;
                             r.x             = (int16_t)qx;
                             r.y             = (int16_t)y;
@@ -1384,11 +1396,17 @@ namespace Renderer
     #define JET_UV_STEP
 #endif
 #if JET_FAST_SIMPLE_SPANS && TEXTURE_MAPPING && !PERSPECTIVE_CORRECT_TEXTURES && !BILINEAR_FILTER
-                if (decltype(useSpans)::value && rowIncrementalUV && directRGB565
-                    && plainOpaqueReplace && !diffuseMap->hasAlpha) {
-                    // Opaque affine tiles need neither per-pixel edge tests
-                    // nor the lighting/alpha/depth machinery of the general
-                    // loop. Coverage comes from the exact scanline walker.
+                if (decltype(useSpans)::value && rowIncrementalUV && (directRGB565 || directIndexed8)
+                    && !diffuseMap->hasAlpha && !textureFeedback
+    #if SCREEN_DOOR_ALPHA
+                    && plainOpaqueReplace
+    #else
+                    && !isWaterReflect
+    #endif
+                    ) {
+                    // Affine tiles use exact span coverage. Sample contiguous
+                    // blocks before SIMD colour blending, avoiding repeated
+                    // edge/depth checks for translucent textures as well.
                     const uint16_t* texels=diffuseMap->data;
                     const unsigned tw=diffuseMap->width, th=diffuseMap->height;
     #if HALF_WIDTH_BUFFERS
@@ -1401,7 +1419,53 @@ namespace Renderer
     #else
                     const int rowBase=y*(screenWidth/strideDiv);
     #endif
-                    auto textureSpan=[&](auto fading) {
+    #if !SCREEN_DOOR_ALPHA
+                    const int textureCount = (xEnd - xStart) / xStep + 1;
+                    if (plainOpaqueReplace && textureCount < 32) {
+                        // Tiny spans cannot amortize staging and blend setup.
+                        // Keep the original direct loop, including scalar LOD.
+                        int32_t uq = uQ16, vq = vQ16;
+                        auto* dst = framebuffer + rowBase + xStart / strideDiv;
+                        auto shortSpan = [&](auto indexed, auto fading) {
+                            for (int i = 0; i < textureCount; ++i, uq += rowUStep, vq += rowVStep) {
+                                uint16_t texel;
+                                if constexpr (decltype(indexed)::value)
+                                    texel = TextureSpans::sampleIndexed8<false>(
+                                        reinterpret_cast<const uint8_t*>(texels), diffuseMap->palette, tw, th, uq, vq);
+                                else
+                                    texel = TextureSpans::sample<false>(texels, tw, th, uq, vq);
+                                if constexpr (decltype(fading)::value)
+                                    texel = blendRGB565(material->color, texel, textureLodFade);
+                                dst[i] = texel;
+                            }
+                        };
+                        if (directIndexed8) {
+                            if (textureLodFade == 255) shortSpan(std::true_type{}, std::false_type{});
+                            else shortSpan(std::true_type{}, std::true_type{});
+                        } else {
+                            if (textureLodFade == 255) shortSpan(std::false_type{}, std::false_type{});
+                            else shortSpan(std::false_type{}, std::true_type{});
+                        }
+                    } else {
+                    const RGB565ConstantBlend* textureFade = nullptr;
+                    if (textureLodFade < 255) {
+                        if (!constantReady) {
+                            constantBlend.prepare(material->color, textureLodFade, true);
+                            constantReady = true;
+                        }
+                        textureFade = &constantBlend;
+                    }
+                    if (directIndexed8)
+                        TextureSpans::drawIndexed8(framebuffer + rowBase + xStart / strideDiv,
+                            textureCount, reinterpret_cast<const uint8_t*>(texels), diffuseMap->palette, tw, th,
+                            uQ16, vQ16, rowUStep, rowVStep, alpha, isAdditive, textureFade);
+                    else
+                        TextureSpans::draw(framebuffer + rowBase + xStart / strideDiv,
+                            textureCount, texels, tw, th,
+                            uQ16, vQ16, rowUStep, rowVStep, alpha, isAdditive, textureFade);
+                    }
+    #else
+                    auto textureSpan=[&](auto indexed, auto fading) {
                         int32_t uq=uQ16,vq=vQ16;
                         int index=rowBase+xStart/strideDiv;
                         for(int x=xStart;x<=xEnd;x+=xStep,++index,uq+=rowUStep,vq+=rowVStep) {
@@ -1410,7 +1474,11 @@ namespace Renderer
     #endif
                             const unsigned tx=((unsigned)(uq/65536)&(FIXED_POINT_SCALE-1))*tw/FIXED_POINT_SCALE;
                             const unsigned ty=((unsigned)(vq/65536)&(FIXED_POINT_SCALE-1))*th/FIXED_POINT_SCALE;
-                            uint16_t texel=texels[ty*tw+tx];
+                            uint16_t texel;
+                            if constexpr (decltype(indexed)::value)
+                                texel=diffuseMap->palette[reinterpret_cast<const uint8_t*>(texels)[ty*tw+tx]];
+                            else
+                                texel=texels[ty*tw+tx];
                             if constexpr(decltype(fading)::value) {
     #if SCREEN_DOOR_ALPHA
                                 if(!shouldDrawPixel(x,y,textureLodFade)) texel=material->color;
@@ -1421,8 +1489,14 @@ namespace Renderer
                             framebuffer[index]=texel;
                         }
                     };
-                    if(textureLodFade==255) textureSpan(std::false_type{});
-                    else textureSpan(std::true_type{});
+                    if (directIndexed8) {
+                        if(textureLodFade==255) textureSpan(std::true_type{}, std::false_type{});
+                        else textureSpan(std::true_type{}, std::true_type{});
+                    } else {
+                        if(textureLodFade==255) textureSpan(std::false_type{}, std::false_type{});
+                        else textureSpan(std::false_type{}, std::true_type{});
+                    }
+    #endif
                 } else {
 #endif
     // Per-pixel brightness step appended to the for-loop header below. The
@@ -1607,6 +1681,12 @@ namespace Renderer
                             const unsigned tx=((unsigned)uv.x & (FIXED_POINT_SCALE-1))*diffuseMap->width/FIXED_POINT_SCALE;
                             const unsigned ty=((unsigned)uv.y & (FIXED_POINT_SCALE-1))*diffuseMap->height/FIXED_POINT_SCALE;
                             color=diffuseMap->data[ty*diffuseMap->width+tx];
+                        } else if (directIndexed8) {
+                            // Match the direct RGB565 address calculation on
+                            // general affine/lit pixels; only the fetch differs.
+                            const unsigned tx=((unsigned)uv.x & (FIXED_POINT_SCALE-1))*diffuseMap->width/FIXED_POINT_SCALE;
+                            const unsigned ty=((unsigned)uv.y & (FIXED_POINT_SCALE-1))*diffuseMap->height/FIXED_POINT_SCALE;
+                            color=diffuseMap->palette[reinterpret_cast<const uint8_t*>(diffuseMap->data)[ty*diffuseMap->width+tx]];
                         } else
     #endif
                         color = material->getColor(uv);
@@ -1925,4 +2005,3 @@ namespace Renderer
             renderEvenLines,ignoreZBuffer,noWriteZBuffer,zBias,objAlpha,brightnessPrecomputed,avgZHint);
     }
 } // namespace Renderer
-

@@ -1,8 +1,96 @@
 #include "PostFX.hpp"
 #include <algorithm>
 #include <cstring>
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+#include "esp_attr.h"
+#endif
 
 namespace Renderer {
+
+#if POSTFX_CRT
+namespace {
+inline uint16_t crtSubtractPixel(uint16_t pixel, unsigned amount) {
+    const unsigned r = pixel >> 11, g = (pixel >> 5) & 63, b = pixel & 31;
+    return uint16_t(((r > amount ? r - amount : 0) << 11) |
+                    ((g > amount ? g - amount : 0) << 5) |
+                    (b > amount ? b - amount : 0));
+}
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+alignas(16) static const DRAM_ATTR uint32_t crtSubtractMasks[] = {
+    0x001f001f, 0x001f001f, 0x001f001f, 0x001f001f,
+    0x003f003f, 0x003f003f, 0x003f003f, 0x003f003f
+};
+static void IRAM_ATTR __attribute__((noinline)) crtSubtractSpan(
+#else
+static void crtSubtractSpan(
+#endif
+    uint16_t* pixels, int count, unsigned amount) {
+    if (count <= 0 || amount == 0) return;
+    if (amount >= 63) {
+        std::memset(pixels, 0, size_t(count) * sizeof(uint16_t));
+        return;
+    }
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+    while (count && (uintptr_t(pixels) & 15)) {
+        *pixels = crtSubtractPixel(*pixels, amount);
+        ++pixels;
+        --count;
+    }
+    const int blocks = count / 8;
+    if (blocks) {
+        const uint32_t amountLanes = amount | (amount << 16);
+        const uint32_t* amountPointer = &amountLanes;
+        const uint32_t* masks = crtSubtractMasks;
+        uint32_t savedSar, tmp;
+        // Preserve the legacy subtract-and-clamp operation. Channel values
+        // minus amount stay in signed16 range; VMAX clamps them to zero.
+        // All QR/SAR state stays inside this block, and only complete,
+        // aligned eight-pixel blocks are accessed.
+        __asm__ volatile (
+            "rsr %[saved], sar\n\t"
+            "ee.vld.128.ip q1, %[masks], 16\n\t"
+            "ee.vld.128.ip q2, %[masks], 0\n\t"
+            "ee.vldbc.32 q3, %[amount]\n\t"
+            "ee.zero.q q4\n\t"
+            "loopgtz %[blocks], 1f\n\t"
+            "movi %[tmp], 5\n\twsr %[tmp], sar\n\t"
+            "ee.vld.128.ip q0, %[pixels], 0\n\t"
+            "ee.andq q6, q0, q1\n\t"
+            "ee.vsubs.s16 q6, q6, q3\n\t"
+            "ee.vmax.s16 q6, q6, q4\n\t"
+            "ee.vsr.32 q5, q0\n\t"
+            "ee.andq q5, q5, q2\n\t"
+            "ee.vsubs.s16 q5, q5, q3\n\t"
+            "ee.vmax.s16 q5, q5, q4\n\t"
+            "ee.vsl.32 q5, q5\n\t"
+            "movi %[tmp], 11\n\twsr %[tmp], sar\n\t"
+            "ee.orq q6, q6, q5\n\t"
+            "ee.vsr.32 q5, q0\n\t"
+            "ee.andq q5, q5, q1\n\t"
+            "ee.vsubs.s16 q5, q5, q3\n\t"
+            "ee.vmax.s16 q5, q5, q4\n\t"
+            "ee.vsl.32 q5, q5\n\t"
+            "ee.orq q6, q6, q5\n\t"
+            "ee.vst.128.ip q6, %[pixels], 16\n\t"
+            "1:\n\twsr %[saved], sar\n\t"
+            : [pixels] "+&r"(pixels), [masks] "+&r"(masks),
+              [amount] "+&r"(amountPointer), [saved] "=&r"(savedSar),
+              [tmp] "=&r"(tmp)
+            : [blocks] "r"(blocks)
+            : "memory"
+        );
+        count %= 8;
+    }
+#endif
+    while (count-- > 0) {
+        *pixels = crtSubtractPixel(*pixels, amount);
+        ++pixels;
+    }
+}
+} // namespace
+#endif
+
+
 
 PostFX::PostFX(int screenWidth, int screenHeight)
     : screenWidth(screenWidth), screenHeight(screenHeight) {
@@ -297,24 +385,11 @@ void PostFX::applyBloom(uint16_t* framebuffer) {
 
 void PostFX::applyCRT(uint16_t* framebuffer) {
     #if POSTFX_CRT
-    for (int y = 0; y < screenHeight; y++) {
-        // Create scanline effect
-        uint8_t scanline = (y & 1) ? CRT_SCANLINE_INTENSITY : 0;
-        
-        for (int x = 0; x < screenWidth; x++) {
-            uint16_t& pixel = framebuffer[y * screenWidth + x];
-            int r = ((pixel >> 11) & 0x1F);
-            int g = ((pixel >> 5) & 0x3F);
-            int b = (pixel & 0x1F);
-            
-            // Darken alternate lines and add slight color tinting
-            r = std::max(0, r - scanline);
-            g = std::max(0, g - scanline);
-            b = std::max(0, b - scanline);
-            
-            pixel = (r << 11) | (g << 5) | b;
-        }
-    }
+    // Preserve the legacy full-width layout and subtractive colour tint.
+    // Even rows are unchanged, so only visit the odd stored rows.
+    const uint8_t scanline = CRT_SCANLINE_INTENSITY;
+    for (int y = 1; y < screenHeight; y += 2)
+        crtSubtractSpan(framebuffer + y * screenWidth, screenWidth, scanline);
     #endif
 }
 

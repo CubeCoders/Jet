@@ -66,6 +66,9 @@ public:
         BlendMode blendMode = BlendMode::BLEND_ADD;
         /// Integer upscale factor (1 = native texture size, 2 = 2×, etc.).
         int       scale     = 1;
+        /// Sprite2D texture flags. Width/height describe the expanded image
+        /// before scaling, including any mirrored halves.
+        uint8_t   textureFlags = 0;
     };
 
     /// @param scene         Scene to register sprites with and to submit
@@ -101,6 +104,7 @@ public:
             sprites[i].zOrder    = 100 + i;  // draw above normal HUD
             sprites[i].blendMode = elements[i].blendMode;
             sprites[i].scale     = elements[i].scale;
+            sprites[i].textureFlags = elements[i].textureFlags;
             scene->addSprite(&sprites[i]);
         }
     }

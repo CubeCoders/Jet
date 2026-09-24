@@ -10,6 +10,7 @@
 #include "JetConfig.hpp"
 #include "PostFX.hpp"
 #include "Sprite2D.hpp"
+#include "DepthBuckets.hpp"
 
 namespace Renderer {
 
@@ -247,10 +248,12 @@ private:
         // into the per-pixel screen-door alpha at raster time.
         uint8_t objAlpha;
 #if MAX_PICK_QUERIES > 0
-        // Source object + ORIGINAL triangle index (in obj->triangles) for
-        // pick attribution. Carried through the painter sort.
+        // Owner, actual mesh and original triangle index for pick attribution.
+        // Carried through the painter sort without mutating source geometry.
         Object* sourceObject;
         int32_t sourceTriangleIndex;
+        const Object* sourceMesh;
+        int32_t sourceInstanceIndex;
 #endif
     };
     std::vector<RenderTri> renderQueue;
@@ -285,6 +288,7 @@ private:
     bool clearRenderBuffer = true;
     bool renderEvenLines = false;
 
+    DepthBuckets<SortBucketCount - 2> depthBuckets;
     float cameraMatrix[9] = {}; // Same composed camera transform for the entire frame.
 
     // Frustum side-plane normal lengths for the quick sphere cull in
@@ -294,7 +298,7 @@ private:
     float cullPlaneLh = 1.0f;
     float cullPlaneLv = 1.0f;
 
-    bool cullObject(Object* obj,
+    bool cullObject(Object* obj, const Vector3& relativeCentre, int32_t maxExtent,
                     int32_t camCosX, int32_t camSinX,
                     int32_t camCosY, int32_t camSinY,
                     int32_t camCosZ, int32_t camSinZ) const;
@@ -304,7 +308,7 @@ private:
                       int32_t camCosY, int32_t camSinY,
                       int32_t camCosZ, int32_t camSinZ,
                       uint8_t objAlpha,
-                      Object* meshSource = nullptr);
+                      const Object* meshSource = nullptr);
     void reconstructCheckerboard();
     void clearBuffers();
 

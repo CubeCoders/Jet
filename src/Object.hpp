@@ -60,6 +60,41 @@ public:
         uint16_t lambertBrightness = 0;
     };
 
+    /// Rigid mesh-local to object-local transform. Matrix rows act on column
+    /// vectors; translation uses the same integer units as vertex positions.
+    /// Supply an orthonormal matrix (rotation/reflection), not a scale/shear.
+    struct InstanceTransform {
+        float basis[9] = {1,0,0, 0,1,0, 0,0,1};
+        Vector3 position = {0,0,0};
+        static InstanceTransform rotated(const Vector3& degrees, const Vector3& position = {0,0,0});
+    };
+    using SharedMesh = std::shared_ptr<const Object>;
+    /// Optional immutable table indexed by the prototype's original triangle
+    /// index. The table is retained; its materials are borrowed and stay live.
+    /// A null entry preserves that triangle's original material/baked colour.
+    using TriangleMaterials = std::shared_ptr<const std::vector<Material*>>;
+    struct MeshInstance {
+        SharedMesh mesh;
+        InstanceTransform transform;
+        Material* materialOverride = nullptr; ///< Optional uniform replacement, borrowed.
+        TriangleMaterials triangleMaterials; ///< Per-face replacements; uniform override wins.
+    };
+
+    /// Move authored geometry into an immutable, reference-counted prototype.
+    /// Prepares its bounds and packed positions once. Materials are borrowed,
+    /// as for ordinary Object triangles. Nested instance batches are rejected.
+    static SharedMesh freezeMesh(Object&& authored);
+    /// Instances render after this object's own triangles, in insertion order.
+    /// They inherit its transform, culling, fade, LOD and depth flags. Visibility
+    /// is tested for the whole batch; keep spatially distant batches separate.
+    /// Call calculateBoundingBox() after changing placements or adding instances.
+    /// The same mesh can be retained by any number of independently placed
+    /// Objects or by several instances within one Object.
+    bool addInstance(SharedMesh mesh, const InstanceTransform& transform,
+                     Material* materialOverride = nullptr, TriangleMaterials triangleMaterials = {});
+    size_t vertexCount() const;
+    size_t triangleCount() const;
+
     std::vector<Vertex> vertices;       ///< Mesh vertices.
     std::vector<int> indices;           ///< Index buffer (unused by the default rasteriser).
     std::vector<Triangle> triangles;    ///< Mesh triangles.
@@ -71,11 +106,19 @@ public:
     /// Uses PSRAM on ESP builds with PSRAM; returns false if the position
     /// buffer cannot be allocated, leaving the ordinary vertex path active.
     /// Copies of an Object share the immutable cache until either invalidates it.
+    /// Repeated positions may also share projection work; UVs and normals
+    /// remain independent. Failure to allocate that optional map is harmless.
     bool cachePositions();
     const Vector3* cachedPositions() const {
         return positionCacheSize == vertices.size() ? positionCache.get() : nullptr;
     }
-    void invalidatePositions() { positionCache.reset(); positionCacheSize = 0; }
+    /// Optional earliest equal-position vertex indices, each <= its own index.
+    const uint16_t* cachedPositionSources() const {
+        return positionCacheSize == vertices.size() ? positionSources.get() : nullptr;
+    }
+    void invalidatePositions() {
+        positionCache.reset(); positionSources.reset(); positionCacheSize = 0;
+    }
 
     Vector3 boundingBoxMin = {0,0,0};   ///< Local-space AABB minimum (recomputed by calculateBoundingBox).
     Vector3 boundingBoxMax = {0,0,0};   ///< Local-space AABB maximum.
@@ -280,7 +323,14 @@ public:
                           const AmbientLight*     ambientLight);
 private:
     std::shared_ptr<const Vector3> positionCache;
+    std::shared_ptr<const uint16_t> positionSources;
     size_t positionCacheSize = 0;
+
+public:
+    // Keep existing hot Object fields at their original offsets. Empty batches
+    // add only the vector header; prototypes and placement arrays are shared
+    // or allocated only when instancing is used.
+    std::vector<MeshInstance> instances;
 
 };
 

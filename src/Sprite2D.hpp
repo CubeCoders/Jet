@@ -30,8 +30,23 @@
 
 namespace Renderer {
 
+struct Sprite2D;
+/// Composite one full-resolution RGB565 output row. Sprites are painted in
+/// supplied order (back to front); no sorting, allocation or platform APIs.
+/// `line` contains `width` pixels at screen y. Set swapDestination for panel
+/// byte order. Sprite/material/texture storage must remain stable during use.
+void compositeSprites(uint16_t* line, int width, int y,
+                      Sprite2D* const* sprites, int count,
+                      bool swapDestination = false);
+
 /// @brief Screen-space 2D overlay registered with a Scene.
 struct Sprite2D {
+    enum TextureFlags : uint8_t {
+        FLIP_X = 1,   ///< Reverse horizontal sampling without changing the size.
+        FLIP_Y = 2,   ///< Reverse vertical sampling without changing the size.
+        MIRROR_X = 4, ///< Append a horizontally flipped copy, doubling the width.
+        MIRROR_Y = 8  ///< Append a vertically flipped copy, doubling the height.
+    };
     int         x        = 0;       ///< Left edge in pixels (screen space, 0 = left).
     int         y        = 0;       ///< Top edge in pixels (screen space, 0 = top).
     int         width    = 0;       ///< Width in pixels.  Ignored when diffuseMap is set (texture dimensions are used).
@@ -57,6 +72,26 @@ struct Sprite2D {
     /// width/height instead. Useful for soft glow textures that would look too
     /// small at 1:1 — at 2× or 3× the smooth falloff still reads well.
     int         scale     = 1;
+    /// Texture transforms, ignored for solid rectangles. MIRROR_X | MIRROR_Y
+    /// expands a stored top-left quarter into a symmetric full image. Flips
+    /// apply to that expanded image, before scaling. No extra sprites or image
+    /// buffers are created. Mirroring repeats the edge texel at the centre.
+    uint8_t     textureFlags = 0;
+
+    int sourceWidth() const {
+        const Texture* tex = material ? material->diffuseMap : nullptr;
+        return tex ? tex->width * ((textureFlags & MIRROR_X) ? 2 : 1) : width;
+    }
+    int sourceHeight() const {
+        const Texture* tex = material ? material->diffuseMap : nullptr;
+        return tex ? tex->height * ((textureFlags & MIRROR_Y) ? 2 : 1) : height;
+    }
+
+    // Blend a clipped textured row. Offsets are output pixels from the sprite
+    // origin; the caller clips them to sourceWidth/Height() * scale, checks
+    // scale > 0, and supplies the combined material/sprite alpha.
+    void blendTextureRow(uint16_t* dst, int count, int outputX, int outputY,
+                         uint8_t combinedAlpha, bool swapDestination = false) const;
 };
 
 // ---------------------------------------------------------------------------

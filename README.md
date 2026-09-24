@@ -36,6 +36,8 @@ for the available options.
 ### Rendering
 
 - Triangle and quad meshes with per-face material assignment.
+- Shared immutable meshes with per-instance position, rotation and optional
+  material overrides, reducing storage for repeated scenery and game objects.
 - Flat, Gouraud, Phong and wireframe shading modes (per material).
 - Affine and perspective-correct texture mapping; optional bilinear filtering.
 - Optional Z-buffering, or painter's-algorithm sorting (per-object and/or
@@ -75,8 +77,8 @@ for the available options.
   pyramids, grids, planes, quads and billboards.
 - Minimal Wavefront `.obj` loader.
 - Optional screen-space picking (compile-time bounded; zero cost when set to
-  0). Returns the closest hit object, triangle index, depth and snapped pixel
-  coordinate.
+  0). Returns the closest hit object, source mesh, instance and triangle index,
+  depth and snapped pixel coordinate.
 - Animated palette textures: `Texture::advancePalette(dt, fps)` cycles the
   palette offset by `dt × fps` entries per call; no-op when `paletteSize` is 0.
 - Custom shader entry point for extending the fixed-function pipeline.
@@ -87,6 +89,19 @@ for the available options.
 fills, colour-key transparency, alpha and additive blending, integer upscaling,
 and `zOrder`-based draw order. On `HALF_WIDTH_BUFFERS` builds, sprites are
 composited at full output resolution during display scanout.
+
+Display integrations can call `Renderer::compositeSprites(line, width, y,
+sprites, count, swapDestination)` from `Sprite2D.hpp` to blend one RGB565 output
+row. Pass `true` for byte-swapped panel buffers, or leave it `false` for native
+RGB565. The helper clips to the row width, allocates nothing and paints in the
+supplied order; sort by `zOrder` before scanout and keep sprite, material and
+texture storage stable until it finishes. It has no ESP32 dependencies.
+
+Set `textureFlags` to `Sprite2D::FLIP_X` and/or `FLIP_Y` to flip an image.
+`MIRROR_X` and `MIRROR_Y` append reflected halves: combining both draws a
+32×32 top-left quarter as a symmetric 64×64 sprite, using one quarter of
+the texture storage. Mirroring preserves integer scaling and colour-key
+transparency without extra sprite instances.
 
 ### Particles
 
@@ -163,6 +178,47 @@ int main() {
     }
 }
 ```
+
+### Shared meshes
+
+Build a mesh once, then move it into a shared prototype. Instances retain the
+prototype automatically and share its vertices, triangles and packed positions:
+
+```cpp
+Object authored;
+// Add vertices and triangles to authored, using your existing materials.
+auto mesh = Object::freezeMesh(std::move(authored));
+
+Object scenery;
+scenery.addInstance(mesh, Object::InstanceTransform::rotated({0, 0, 0}, {0, 0, 500}));
+scenery.addInstance(mesh, Object::InstanceTransform::rotated({0, 90, 0}, {400, 0, 500}));
+scenery.calculateBoundingBox();
+scene.addObject(&scenery);  // Keep scenery and its materials alive while rendering.
+```
+
+Each instance can take a third `Material*` argument to replace all its face
+materials. The prototype's materials remain borrowed, as with ordinary meshes.
+For different face colours or independently animated materials, pass a fourth
+`Object::TriangleMaterials` argument: a shared immutable vector of material
+pointers, one per original prototype triangle. Null entries retain the original
+material or baked colour; a uniform third-argument override takes precedence.
+The renderer retains the table and indexes it correctly after triangle sorting.
+`addInstance()` rejects tables whose length does not match the prototype.
+Finish geometry edits, normal generation and lighting baking before freezing it.
+Prototypes cannot contain further instances.
+
+Instances inherit the owning object's transform, visibility, culling mode,
+distance fades, LOD selection and depth flags. A batch can also contain ordinary
+triangles. Keep nearby instances together: visibility is tested for the entire
+batch, while separate owners allow independent culling and fading. Recalculate
+bounds after editing placements. For different object sizes, scale a prototype
+before freezing it; instance matrices represent rotation or reflection only.
+
+Instancing reduces mesh storage and can improve cache reuse. Every visible copy
+still needs its own transformation and rasterisation, so speed depends on scene
+layout and mesh size. `SORT_TRIANGLES` sorts each mesh through temporary indices
+without modifying the prototype. Picking reports the owner in `object`, the
+actual prototype or LOD in `mesh`, and its original `triangleIndex`.
 
 ## Documentation
 

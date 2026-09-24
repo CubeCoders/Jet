@@ -34,9 +34,17 @@ struct alignas(16) RGB565ConstantBlend {
 };
 
 // Nearest-neighbour sprite row, using the compositor's original 8-bit fixed
-// point source coordinate and step. Overlapping spans retain forward order.
+// point source coordinate and signed step (negative for horizontal flips).
+// Overlapping spans retain forward destination write order in either direction.
 void blendRGB565ScaledSpan(uint16_t* dst, const uint16_t* src, int count,
                           int sourceX256, int step256, uint8_t alpha,
                           RGB565BlendMode mode, uint8_t flags = 0, uint16_t key = 0);
+
+// Sample a row followed by its horizontal reflection. Coordinates address the
+// expanded row (2 * sourceWidth texels); step256 must be non-negative.
+// The two halves share one staging tile and SIMD blend, including at the seam.
+void blendRGB565MirroredSpan(uint16_t* dst, const uint16_t* src, int sourceWidth,
+                            int count, int sourceX256, int step256, uint8_t alpha,
+                            RGB565BlendMode mode, uint8_t flags = 0, uint16_t key = 0);
 }
 #endif

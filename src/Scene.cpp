@@ -6,8 +6,42 @@
 #include <cstring> // For memset
 #include <algorithm> // For std::min, std::max
 #include <cmath> // For sqrtf (per-object distance fade / LOD pick)
+#include <cstdlib>
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+#include <esp_heap_caps.h>
+#include <new>
+#endif
 
 namespace Renderer {
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+// The transform scratch is frequently read back while emitting triangles.
+// Prefer internal RAM only for small allocations; retain malloc's normal
+// placement policy for larger meshes or if internal memory is unavailable.
+// The vector can briefly hold old and new buffers while growing.
+template<class T> struct TransformScratchAllocator {
+    using value_type = T;
+    using is_always_equal = std::true_type;
+    TransformScratchAllocator() = default;
+    template<class U> TransformScratchAllocator(const TransformScratchAllocator<U>&) {}
+    T* allocate(size_t count) {
+        void* p = count <= 4096 / sizeof(T)
+            ? heap_caps_malloc(count * sizeof(T), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) : nullptr;
+        if (!p) p = std::malloc(count * sizeof(T));
+        if (!p) {
+#if defined(__cpp_exceptions)
+            throw std::bad_alloc();
+#else
+            std::abort();
+#endif
+        }
+        return static_cast<T*>(p);
+    }
+    void deallocate(T* p, size_t) { std::free(p); }
+    template<class U> bool operator==(const TransformScratchAllocator<U>&) const { return true; }
+    template<class U> bool operator!=(const TransformScratchAllocator<U>&) const { return false; }
+};
+#endif
+
 
 // Static emissive material used to render triangles whose lighting has been
 // pre-baked into Triangle::bakedColor.  The colour field is overwritten
@@ -58,7 +92,27 @@ static inline uint16_t sceneLambertDiffuse(const Vector3& N, const Vector3& L,
 #endif
 
 // Returns true if the object's AABB is entirely outside the view frustum.
-bool Scene::cullObject(Object* obj,
+// Account for an off-origin batch when the owning object rotates. This centre
+// is shared by conservative frustum tests, distance fades and LOD selection.
+#ifdef _MSC_VER
+static __forceinline Vector3 objectCentre(const Object& obj, int32_t camCosY, int32_t camSinY) {
+#else
+static inline __attribute__((always_inline)) Vector3 objectCentre(const Object& obj, int32_t camCosY, int32_t camSinY) {
+#endif
+    Vector3 p=obj.centreVolume;
+    if (obj.isBillboard) {
+        p={(int32_t)(((int64_t)p.x*camCosY-(int64_t)p.z*camSinY)/FIXED_POINT_SCALE),p.y,
+           (int32_t)(((int64_t)p.x*camSinY+(int64_t)p.z*camCosY)/FIXED_POINT_SCALE)};
+    } else if (obj.rotation.x || obj.rotation.y || obj.rotation.z) {
+        const auto t=Object::InstanceTransform::rotated(obj.rotation);
+        p={(int32_t)(t.basis[0]*p.x+t.basis[1]*p.y+t.basis[2]*p.z),
+           (int32_t)(t.basis[3]*p.x+t.basis[4]*p.y+t.basis[5]*p.z),
+           (int32_t)(t.basis[6]*p.x+t.basis[7]*p.y+t.basis[8]*p.z)};
+    }
+    return p+obj.position;
+}
+
+bool Scene::cullObject(Object* obj, const Vector3& relativeCentre, int32_t maxExtent,
                        int32_t camCosX, int32_t camSinX,
                        int32_t camCosY, int32_t camSinY,
                        int32_t camCosZ, int32_t camSinZ) const {
@@ -69,7 +123,9 @@ bool Scene::cullObject(Object* obj,
     const Vector3& bMin = obj->boundingBoxMin;
     const Vector3& bMax = obj->boundingBoxMax;
 
-    int outLeft = 0, outRight = 0, outTop = 0, outBottom = 0, outNear = 0, outFar = 0;
+    // A box is rejected only if every corner is outside the same plane.
+    // Once no such plane remains, further corner transforms cannot reject it.
+    unsigned commonOutside = 0x3f;
     float   fovFactor = camera->fovFactor;
     int32_t nearPlane = camera->nearPlane;
     int32_t farPlane  = camera->farPlane;
@@ -77,8 +133,12 @@ bool Scene::cullObject(Object* obj,
     // ---- Quick sphere-vs-frustum classification ----------------------------
     // One point transform (~20 ops) instead of the 8-corner AABB test
     // (~240 ops) for the vast majority of objects. Conservative bounding
+#if JET_MESH_INSTANCING
+    // sphere: centre transformed into world space, with radius = longest
+#else
     // sphere: centre at position+centreVolume (same rotation-ignoring
     // convention as prepareFrame's far pre-cull) with radius = longest
+#endif // JET_MESH_INSTANCING
     // AABB dimension, which always covers the true half-diagonal
     // (halfDiag <= 0.866*maxExtent) plus slack for rotated meshes.
     //
@@ -91,16 +151,15 @@ bool Scene::cullObject(Object* obj,
     // the sphere's z sign — no divides, no per-object sqrt (plane normal
     // lengths cullPlaneLh/Lv are cached per frame in prepareFrame()).
     {
-        const float r = (float)std::max({bMax.x - bMin.x,
-                                         bMax.y - bMin.y,
-                                         bMax.z - bMin.z});
+        const float r = (float)maxExtent;
         constexpr float invFps = 1.0f / (float)FIXED_POINT_SCALE;
         const float cYc = (float)camCosY * invFps, cYs = (float)camSinY * invFps;
         const float cXc = (float)camCosX * invFps, cXs = (float)camSinX * invFps;
         const float cZc = (float)camCosZ * invFps, cZs = (float)camSinZ * invFps;
-        const float px = (float)(objPos.x + obj->centreVolume.x - camPos.x);
-        const float py = (float)(objPos.y + obj->centreVolume.y - camPos.y);
-        const float pz = (float)(objPos.z + obj->centreVolume.z - camPos.z);
+        // Reuse the camera-relative centre from the distance/LOD prepass.
+        const float px = (float)relativeCentre.x;
+        const float py = (float)relativeCentre.y;
+        const float pz = (float)relativeCentre.z;
         // Camera rotation Y, X, Z — same order as the corner loop below.
         const float t1x =  px * cYc + pz * cYs;
         const float t1z = -px * cYs + pz * cYc;
@@ -175,22 +234,25 @@ bool Scene::cullObject(Object* obj,
                  (p.x * camSinZ + p.y * camCosZ) / FIXED_POINT_SCALE,
                   p.z); p = r;
 
-        if (p.z < nearPlane) { outNear++; continue; }
-        if (p.z > farPlane)  { outFar++;  continue; }
-        if (p.z <= 0)        { outNear++; continue; }
-
-        const float invZ = fovFactor / (float)p.z;
-        int32_t sx = (int32_t)(p.x * invZ) + screenWidth / 2;
-        int32_t sy = screenHeight / 2 - (int32_t)(p.y * invZ);
-        if (sx < 0)            outLeft++;
-        if (sx > screenWidth)  outRight++;
-        if (sy < 0)            outTop++;
-        if (sy > screenHeight) outBottom++;
+        unsigned outside = 0;
+        if (p.z < nearPlane) outside = 1;
+        else if (p.z > farPlane) outside = 2;
+        else if (p.z <= 0) outside = 1;
+        else {
+            // Preserve projection and truncation at the viewport boundary.
+            const float invZ = fovFactor / (float)p.z;
+            const int32_t sx = (int32_t)(p.x * invZ) + screenWidth / 2;
+            const int32_t sy = screenHeight / 2 - (int32_t)(p.y * invZ);
+            if (sx < 0)            outside |= 4;
+            if (sx > screenWidth)  outside |= 8;
+            if (sy < 0)            outside |= 16;
+            if (sy > screenHeight) outside |= 32;
+        }
+        commonOutside &= outside;
+        if (!commonOutside) return false;
     }
 
-    return (outNear == 8 || outFar == 8 ||
-            outLeft == 8 || outRight == 8 ||
-            outTop  == 8 || outBottom == 8);
+    return true;
 }
 
 Scene::Scene(uint16_t* framebuffer, uint16_t* zBuffer, int screenWidth, int screenHeight)
@@ -317,34 +379,20 @@ void Scene::reconstructCheckerboard() {
 static void jet_fill_u32x16(uint32_t* dest, uint32_t val, int n32) {
     const int n16 = n32 >> 2;
     if (n16 > 0) {
+        // One store per hardware-loop iteration; no scalar decrement/branch.
+        const int stride = 16;
         __asm__ volatile (
             "ee.movi.32.q q0, %[v], 0\n\t"
             "ee.movi.32.q q0, %[v], 1\n\t"
             "ee.movi.32.q q0, %[v], 2\n\t"
             "ee.movi.32.q q0, %[v], 3\n\t"
-            : : [v] "r"(val)
+            "loopnez %[n], .Ljet_clear_end_%=\n\t"
+            "ee.vst.128.xp q0, %[p], %[s]\n\t"
+            ".Ljet_clear_end_%=:\n\t"
+            : [p] "+&r"(dest)
+            : [s] "r"(stride), [n] "r"(n16), [v] "r"(val)
+            : "memory"
         );
-        // EE.VST.128.XP takes the post-increment stride as a register,
-        // not a bare immediate: as += stride_reg after each 128-bit store.
-        // 4x-unrolled: the volatile asm + memory clobber stops GCC from
-        // unrolling this itself, so retire 64 bytes per loop iteration by
-        // hand and mop up the remainder one store at a time.
-        const int stride = 16;
-        for (int i = n16 >> 2; i > 0; --i) {
-            __asm__ volatile (
-                "ee.vst.128.xp q0, %[p], %[s]\n\t"
-                "ee.vst.128.xp q0, %[p], %[s]\n\t"
-                "ee.vst.128.xp q0, %[p], %[s]\n\t"
-                "ee.vst.128.xp q0, %[p], %[s]\n\t"
-                : [p] "+r"(dest) : [s] "r"(stride) : "memory"
-            );
-        }
-        for (int i = n16 & 3; i > 0; --i) {
-            __asm__ volatile (
-                "ee.vst.128.xp q0, %[p], %[s]\n\t"
-                : [p] "+r"(dest) : [s] "r"(stride) : "memory"
-            );
-        }
     }
     for (int r = n32 & 3; r-- > 0; ) *dest++ = val;
 }
@@ -500,6 +548,7 @@ void PERF_CRITICAL Scene::clearBuffers() {
 
 void Scene::prepareFrame() {
     if (!camera) return;
+    depthBuckets.setRange(camera->farPlane - camera->nearPlane);
     // renderEvenLines drives the frame-parity selection used by both interlaced
     // and checkerboard modes.  In interlaced mode it selects which rows to draw;
     // in checkerboard mode it selects which (x+y) pixel parity to draw.  When
@@ -631,21 +680,22 @@ void Scene::prepareFrame() {
         //    (always >= the true bounding-sphere radius — never drops a
         //    visible object).
         uint8_t objAlpha = 255;
-        const int32_t _ocx = (obj->position.x + obj->centreVolume.x) - camera->position.x;
-        const int32_t _ocy = (obj->position.y + obj->centreVolume.y) - camera->position.y;
-        const int32_t _ocz = (obj->position.z + obj->centreVolume.z) - camera->position.z;
+        const Vector3 centre=objectCentre(*obj,camCosY,camSinY);
+        const int32_t _ocx = centre.x - camera->position.x;
+        const int32_t _ocy = centre.y - camera->position.y;
+        const int32_t _ocz = centre.z - camera->position.z;
         int64_t distSq = (int64_t)_ocx*_ocx + (int64_t)_ocy*_ocy + (int64_t)_ocz*_ocz;
         int32_t dist   = -1;
+        const int32_t maxExtent = std::max({
+            obj->boundingBoxMax.x - obj->boundingBoxMin.x,
+            obj->boundingBoxMax.y - obj->boundingBoxMin.y,
+            obj->boundingBoxMax.z - obj->boundingBoxMin.z});
         {
-            const int32_t maxExtent = std::max({
-                obj->boundingBoxMax.x - obj->boundingBoxMin.x,
-                obj->boundingBoxMax.y - obj->boundingBoxMin.y,
-                obj->boundingBoxMax.z - obj->boundingBoxMin.z});
             const int64_t farCutoff = static_cast<int64_t>(camera->farPlane) + maxExtent;
             if (distSq > farCutoff * farCutoff) continue;
         }
         // 2) Object-level AABB frustum cull (all 8 corners; full rotation).
-        if (cullObject(obj, camCosX, camSinX, camCosY, camSinY, camCosZ, camSinZ))
+        if (cullObject(obj, {_ocx, _ocy, _ocz}, maxExtent, camCosX, camSinX, camCosY, camSinY, camCosZ, camSinZ))
             continue;
         // 3) Per-object distance fade (two ramps, multiplied):
         //     - fadeFar > 0:   close=opaque, far=invisible (decor fade-out).
@@ -803,6 +853,8 @@ void Scene::rasterizeBand(int yMin, int yMax, uint8_t* triangleFlags) {
 #if MAX_PICK_QUERIES > 0
         bandRast.currentPickObject        = t.sourceObject;
         bandRast.currentPickTriangleIndex = t.sourceTriangleIndex;
+        bandRast.currentPickMesh = t.sourceMesh;
+        bandRast.currentPickInstanceIndex = t.sourceInstanceIndex;
 #endif
         // t.avgZ rides along as the FAST_Z depth hint: emitTri computed the
         // same three-vertex average and already culled it against near/far,
@@ -911,10 +963,10 @@ void Scene::drawSprites() {
 
         const Texture* tex = sp->material->diffuseMap;
 
-        // Clip dest rect to framebuffer bounds.
-        const int srcW = tex ? tex->width  : sp->width;
-        const int srcH = tex ? tex->height : sp->height;
-        if (srcW <= 0 || srcH <= 0) continue;
+        // Mirrored textures expose their expanded dimensions to clipping.
+        const int srcW = sp->sourceWidth();
+        const int srcH = sp->sourceHeight();
+        if (srcW <= 0 || srcH <= 0 || sp->scale <= 0) continue;
         const int dstW = srcW * sp->scale;
         const int dstH = srcH * sp->scale;
 
@@ -927,42 +979,10 @@ void Scene::drawSprites() {
         const int dy1 = (y1 > screenHeight) ? screenHeight : y1;
         if (dx0 >= dx1 || dy0 >= dy1) continue;
 
-        // Source start offsets for the unscaled (scale==1) path.
-        const int sx0 = dx0 - x0;
-        const int sy0 = dy0 - y0;
-
-        if (tex && sp->scale > 1) {
-            // ---- Nearest-neighbour upscale textured blit (scale > 1) ---------
-            // fp8 step: advances source coord by (1/scale) per output pixel.
-            const int xStep = (srcW << 8) / dstW;
-            const int yStep = (srcH << 8) / dstH;
-            const bool colorKey = tex->hasAlpha;
-            const uint16_t keyColor = tex->alphaColor;
-            const uint16_t* src = tex->data;
-            int sf_y = (dy0 - y0) * yStep;
-            for (int dy = dy0; dy < dy1; ++dy, sf_y += yStep) {
-                const int sy  = sf_y >> 8;   // nearest-neighbour: integer texel
-                uint16_t* dstRow = framebuffer + dy * screenWidth + dx0;
-                int sf_x = (dx0 - x0) * xStep;
-                const int w = dx1 - dx0;
-                blendRGB565ScaledSpan(dstRow, src + sy * srcW, w, sf_x, xStep,
-                    (uint8_t)combined,
-                    sp->blendMode == BlendMode::BLEND_ADD ? RGB565BlendMode::Add : RGB565BlendMode::Alpha255,
-                    colorKey ? BlendColorKey : 0, keyColor);
-            }
-        } else if (tex) {
-            // ---- Textured sprite blit ----------------------------------------
-            const bool colorKey = tex->hasAlpha;
-            const uint16_t keyColor = tex->alphaColor;
-            const uint16_t* src = tex->data;
-            for (int dy = dy0; dy < dy1; ++dy) {
-                const int sy = sy0 + (dy - dy0);
-                blendRGB565Span(framebuffer + dy * screenWidth + dx0,
-                    src + sy * tex->width + sx0, dx1 - dx0, 0, (uint8_t)combined,
-                    sp->blendMode == BlendMode::BLEND_ADD ? RGB565BlendMode::Add : RGB565BlendMode::Alpha255,
-                    colorKey ? BlendColorKey : 0, keyColor);
-            }
-            continue;
+        if (tex) {
+            for (int dy = dy0; dy < dy1; ++dy)
+                sp->blendTextureRow(framebuffer + dy * screenWidth + dx0,
+                    dx1 - dx0, dx0 - x0, dy - y0, (uint8_t)combined);
         } else {
             // ---- Solid rectangle fill ----------------------------------------
             const uint16_t col = sp->material->color;
@@ -983,8 +1003,8 @@ void Scene::getStatistics(int& objectCount, int& triangleCount, int& vertexCount
 
     for (const auto& obj : objects) {
         if (!obj->enabled) continue;
-        triangleCount += static_cast<int>(obj->triangles.size());
-        vertexCount += static_cast<int>(obj->vertices.size());
+        triangleCount += static_cast<int>(obj->triangleCount());
+        vertexCount += static_cast<int>(obj->vertexCount());
     }
 }
 
@@ -993,7 +1013,7 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
                                      int32_t camCosY, int32_t camSinY,
                                      int32_t camCosZ, int32_t camSinZ,
                                      uint8_t objAlpha,
-                                     Object* meshSource) {
+                                     const Object* meshSource) {
     // meshSource decouples "which mesh do we rasterise" from "where / how
     // does the object live in the world". Defaults to obj itself, so the
     // non-LOD path is unchanged. When the global LOD system picks a
@@ -1006,9 +1026,12 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
     // (one render task), so plain static is fine here. PipelineVertex keeps
     // only transformed attributes; mesh UVs are fetched for visible textured
     // faces below. The loop writes every live field, with no upfront copy.
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+    static std::vector<PipelineVertex, TransformScratchAllocator<PipelineVertex>> transformedVertices;
+#else
     static std::vector<PipelineVertex> transformedVertices;
-    const size_t vertCount = meshSource->vertices.size();
-    transformedVertices.resize(vertCount);
+#endif
+
 
     Vector3 camPos(camera->position);
     #if FLOAT_CAMERA_ANGLES
@@ -1114,7 +1137,63 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
     const float fTy = fCamM10*fDx + fCamM11*fDy + fCamM12*fDz;
     const float fTz = fCamM20*fDx + fCamM21*fDy + fCamM22*fDz;
 
+    // The owner is culled once. Its own geometry and all instances retain
+    // insertion order in the global painter queue, including LOD batches.
+    const Object* batch=meshSource;
+    const float baseM[9]={fM00,fM01,fM02,fM10,fM11,fM12,fM20,fM21,fM22};
+    const float baseT[3]={fTx,fTy,fTz};
+
+    for (size_t draw=0; draw<=batch->instances.size(); ++draw) {
+        const Object::MeshInstance* instance=draw ? &batch->instances[draw-1] : nullptr;
+        meshSource=instance ? instance->mesh.get() : batch;
+        if (!meshSource || meshSource->vertices.empty()) continue;
+        const size_t vertCount=meshSource->vertices.size();
+        transformedVertices.resize(vertCount);
+        float composed[9], translated[3];
+        const float* matrix=baseM; const float* translation=baseT;
+        if (instance) {
+            const auto& t=instance->transform; const float* m=t.basis;
+            float billboardM[9];
+            const float* parent=baseM;
+            if (isBillboard) {
+                const float cy=(float)camCosY/FIXED_POINT_SCALE, sy=(float)camSinY/FIXED_POINT_SCALE;
+                for (int row=0;row<3;++row) {
+                    billboardM[row*3]=baseM[row*3]*cy+baseM[row*3+2]*sy;
+                    billboardM[row*3+1]=baseM[row*3+1];
+                    billboardM[row*3+2]=-baseM[row*3]*sy+baseM[row*3+2]*cy;
+                }
+                parent=billboardM;
+            }
+            for (int row=0;row<3;++row) {
+                for (int col=0;col<3;++col)
+                    composed[row*3+col]=parent[row*3]*m[col]+parent[row*3+1]*m[3+col]+parent[row*3+2]*m[6+col];
+                translated[row]=parent[row*3]*t.position.x+parent[row*3+1]*t.position.y+parent[row*3+2]*t.position.z+baseT[row];
+            }
+            matrix=composed; translation=translated;
+        }
+        const float fM00=matrix[0], fM01=matrix[1], fM02=matrix[2];
+        const float fM10=matrix[3], fM11=matrix[4], fM12=matrix[5];
+        const float fM20=matrix[6], fM21=matrix[7], fM22=matrix[8];
+        const float fTx=translation[0], fTy=translation[1], fTz=translation[2];
+        Material* overrideMat=instance ? instance->materialOverride : nullptr;
+        // Original triangle indices remain stable even when SORT_TRIANGLES
+        // orders a mesh differently. Ignore malformed directly edited tables.
+        Material* const* triangleMaterials=instance && instance->triangleMaterials &&
+            instance->triangleMaterials->size()==meshSource->triangles.size()
+            ? instance->triangleMaterials->data() : nullptr;
+
 #if LIGHTING
+    // Ordinary billboard normals retain their authored orientation. Match
+    // that convention for instances: apply the instance rotation, excluding
+    // the camera-facing yaw used only by billboard positions above.
+    float billboardNormals[9];
+    const float* normalMatrix=matrix;
+    if (isBillboard && instance) {
+        const float* m=instance->transform.basis;
+        for (int row=0;row<3;++row) for (int col=0;col<3;++col)
+            billboardNormals[row*3+col]=baseM[row*3]*m[col]+baseM[row*3+1]*m[3+col]+baseM[row*3+2]*m[6+col];
+        normalMatrix=billboardNormals;
+    }
     // Object-local lighting precompute eligibility.
     //
     // The view-space normal transform exists only so that the rasterizer
@@ -1152,10 +1231,12 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
         // (view-space) and there's no place to feed cached brightness
         // back in. FLAT and GOURAUD both consume a per-triangle/vertex
         // scalar brightness so they slot the cache in cleanly.
-        for (const auto& tri : meshSource->triangles) {
-            if (!tri.material) continue;
-            if (tri.material->specular != 0 ||
-                tri.material->shadingMode == ShadingMode::PHONG) {
+        for (size_t i=0;i<meshSource->triangles.size();++i) {
+            const auto& tri=meshSource->triangles[i];
+            const Material* material=overrideMat ? overrideMat :
+                (triangleMaterials && triangleMaterials[i] ? triangleMaterials[i] : tri.material);
+            if (!material) continue;
+            if (material->specular != 0 || material->shadingMode == ShadingMode::PHONG) {
                 allNonSpecular = false;
                 break;
             }
@@ -1169,7 +1250,8 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
             // would shift slightly compared to the renderer's path. In
             // practice diffuse is a per-shading-style constant on every
             // material in this project (255 default).
-            const Material* m0 = meshSource->triangles[0].material;
+            const Material* m0 = overrideMat ? overrideMat :
+                (triangleMaterials && triangleMaterials[0] ? triangleMaterials[0] : meshSource->triangles[0].material);
             if (m0) objDiffuseCoef = m0->diffuse;
 
             // Transform worldLightDir into object-local space. With M
@@ -1186,6 +1268,13 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
                     (int32_t)(((int64_t)Lw.x * objM02 + (int64_t)Lw.y * objM12 + (int64_t)Lw.z * objM22) / FIXED_POINT_SCALE));
             } else {
                 objLightDir = Lw;
+            }
+            if (instance) {
+                const Vector3 L=objLightDir;
+                const float* m=instance->transform.basis;
+                objLightDir={(int32_t)(m[0]*L.x+m[3]*L.y+m[6]*L.z),
+                             (int32_t)(m[1]*L.x+m[4]*L.y+m[7]*L.z),
+                             (int32_t)(m[2]*L.x+m[5]*L.y+m[8]*L.z)};
             }
         }
     }
@@ -1207,7 +1296,7 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
         // is locked to face the camera in yaw. Pitch/roll still apply
         // through the camera transform so the billboard appears
         // tilted exactly as a vertical real object would.
-        if (isBillboard) {
+        if (isBillboard && !instance) {
             pos.assign((pos.x * camCosY - pos.z * camSinY) / FIXED_POINT_SCALE,
                         pos.y,
                        (pos.x * camSinY + pos.z * camCosY) / FIXED_POINT_SCALE);
@@ -1232,10 +1321,20 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
 
     // Transform vertices and normals, writing only live projected attributes.
     const Vector3* packedPositions = meshSource->cachedPositions();
+    const uint16_t* positionSources = meshSource->cachedPositionSources();
     for (size_t vi = 0; vi < vertCount; ++vi) {
         const Object::Vertex& srcVert = meshSource->vertices[vi];
         PipelineVertex& dst = transformedVertices[vi];
-        const Vector3 pos = cameraPosition(packedPositions ? packedPositions[vi] : srcVert.position);
+        if (positionSources && positionSources[vi] != vi) {
+            dst.position = transformedVertices[positionSources[vi]].position;
+        } else {
+            const Vector3 pos = cameraPosition(packedPositions ? packedPositions[vi] : srcVert.position);
+            // Share one floating-point reciprocal across X and Y projection.
+            const float invZ = fovFactor / (float)pos.z;
+            dst.position.x = (int32_t)(pos.x * invZ) + screenWidth / 2;
+            dst.position.y = screenHeight / 2 - (int32_t)(pos.y * invZ);
+            dst.position.z = pos.z;
+        }
 #if LIGHTING
         Vector3 normal(srcVert.normal);
         // Normals use the combined ROTATION only — no translation. The
@@ -1244,19 +1343,11 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
         if (!objectLocalLight) {
             const float fnx = (float)normal.x, fny = (float)normal.y, fnz = (float)normal.z;
             normal.assign(
-                (int32_t)(fnx * fM00 + fny * fM01 + fnz * fM02),
-                (int32_t)(fnx * fM10 + fny * fM11 + fnz * fM12),
-                (int32_t)(fnx * fM20 + fny * fM21 + fnz * fM22));
+                (int32_t)(fnx * normalMatrix[0] + fny * normalMatrix[1] + fnz * normalMatrix[2]),
+                (int32_t)(fnx * normalMatrix[3] + fny * normalMatrix[4] + fnz * normalMatrix[5]),
+                (int32_t)(fnx * normalMatrix[6] + fny * normalMatrix[7] + fnz * normalMatrix[8]));
         }
 #endif
-
-        // Perspective projection — float fovFactor lets us use a reciprocal
-        // multiply instead of 64-bit integer divide, leveraging the hardware
-        // FPU on ESP32-S3/P4 (64-bit div is software-emulated on those cores).
-        const float invZ = fovFactor / (float)pos.z;
-        dst.position.x = (int32_t)(pos.x * invZ) + screenWidth / 2;
-        dst.position.y = screenHeight / 2 - (int32_t)(pos.y * invZ);
-        dst.position.z = pos.z;
 
 #if LIGHTING
         // Store transformed normal (only consumed by the lit shading paths).
@@ -1275,16 +1366,38 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
     }
 
 #if SORT_TRIANGLES
-    // Sort the triangles by depth
-    std::sort(meshSource->triangles.begin(), meshSource->triangles.end(), [&](const Object::Triangle& a, const Object::Triangle& b) {
-        const auto& v1 = transformedVertices[a.v1];
-        const auto& v2 = transformedVertices[a.v2];
-        const auto& v3 = transformedVertices[a.v3];
-        int32_t z1 = v1.position.z;
-        int32_t z2 = v2.position.z;
-        int32_t z3 = v3.position.z;
-        return (z1 + z2 + z3) / 3 > (transformedVertices[b.v1].position.z + transformedVertices[b.v2].position.z + transformedVertices[b.v3].position.z) / 3;
+    // Small meshes retain the existing index sort without extra key storage.
+    constexpr size_t CachedTriangleSortMin = 64;
+    struct TriangleSortKey { int32_t depth; uint32_t index; };
+    static std::vector<uint32_t> triangleOrder;
+    const TriangleSortKey* sortedTriangleKeys = nullptr;
+    if (meshSource->triangles.size() < CachedTriangleSortMin) {
+    // Sort transient indices, never a shared immutable prototype's triangles.
+    triangleOrder.resize(meshSource->triangles.size());
+    for (size_t i=0;i<triangleOrder.size();++i) triangleOrder[i]=(uint32_t)i;
+    std::sort(triangleOrder.begin(),triangleOrder.end(),[&](uint32_t ai,uint32_t bi) {
+        const auto& a=meshSource->triangles[ai]; const auto& b=meshSource->triangles[bi];
+        return (transformedVertices[a.v1].position.z+transformedVertices[a.v2].position.z+transformedVertices[a.v3].position.z)/3 >
+               (transformedVertices[b.v1].position.z+transformedVertices[b.v2].position.z+transformedVertices[b.v3].position.z)/3;
     });
+    } else {
+    // Calculate each exact signed average once. Comparisons then read two
+    // compact keys instead of gathering six transformed vertex depths.
+    static std::vector<TriangleSortKey> triangleKeys;
+    triangleKeys.resize(meshSource->triangles.size());
+    for (size_t i=0; i<triangleKeys.size(); ++i) {
+        const auto& t = meshSource->triangles[i];
+        triangleKeys[i] = {
+            (transformedVertices[t.v1].position.z + transformedVertices[t.v2].position.z +
+             transformedVertices[t.v3].position.z) / 3,
+            (uint32_t)i};
+    }
+    // Sort transient indices, never a shared immutable prototype's triangles.
+    std::sort(triangleKeys.begin(), triangleKeys.end(), [](const TriangleSortKey& a, const TriangleSortKey& b) {
+        return a.depth > b.depth;
+    });
+        sortedTriangleKeys = triangleKeys.data();
+    }
 #endif
 
     // ------------------------------------------------------------------
@@ -1438,6 +1551,8 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
 #if MAX_PICK_QUERIES > 0
         rt.sourceObject        = obj;
         rt.sourceTriangleIndex = srcTriIdx;
+        rt.sourceMesh = meshSource;
+        rt.sourceInstanceIndex = instance ? (int32_t)(draw-1) : -1;
 #endif
         renderQueue.push_back(rt);
         // Preserve the old stable 64-bucket ordering exactly, including
@@ -1449,9 +1564,7 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
                 constexpr int32_t zBiasScale = 256;
                 constexpr int K = SortBucketCount - 2;
                 const int32_t key = avgZ - static_cast<int32_t>(obj->zBias) * zBiasScale;
-                const int32_t range = std::max<int32_t>(camera->farPlane - camera->nearPlane, 1);
-                int b = static_cast<int>((static_cast<int64_t>(key - camera->nearPlane) * K) / range);
-                b = std::max(0, std::min(b, K - 1));
+                const int b = int(depthBuckets.index(key - camera->nearPlane));
                 bucket = static_cast<uint8_t>(K - b);
             }
         }
@@ -1460,7 +1573,12 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
 
     // Render triangles with backface culling and shading
     for (size_t triIdx = 0; triIdx < meshSource->triangles.size(); ++triIdx) {
-        const auto& triangle = meshSource->triangles[triIdx];
+#if SORT_TRIANGLES
+        const size_t sourceIndex=sortedTriangleKeys ? sortedTriangleKeys[triIdx].index : triangleOrder[triIdx];
+#else
+        const size_t sourceIndex=triIdx;
+#endif
+        const auto& triangle = meshSource->triangles[sourceIndex];
         const auto& vA = transformedVertices[triangle.v1];
         const auto& vB = transformedVertices[triangle.v2];
         const auto& vC = transformedVertices[triangle.v3];
@@ -1482,18 +1600,20 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
         #define JET_UV_ARGS(A, B, C)
 #endif
 #if MAX_PICK_QUERIES > 0
-        const int32_t srcTriIdx = (int32_t)triIdx;
+        const int32_t srcTriIdx = (int32_t)sourceIndex;
         #define JET_EMIT_TRI(A, B, C, M, U, V, W)  emitTri((A), (B), (C), (M) JET_UV_ARGS(U, V, W), srcTriIdx)
 #else
         #define JET_EMIT_TRI(A, B, C, M, U, V, W)  emitTri((A), (B), (C), (M) JET_UV_ARGS(U, V, W))
 #endif
 
+        Material* replacement=overrideMat ? overrideMat :
+            (triangleMaterials ? triangleMaterials[sourceIndex] : nullptr);
+        Material* effectiveMat=replacement ? replacement : triangle.material;
+        if (triangle.colorBaked && !replacement) {
+            s_bakedMat.color=triangle.bakedColor;
+            effectiveMat=&s_bakedMat;
+        }
         if (outMask == 0 && farMask == 0) {       // fast path: fully inside
-            Material* effectiveMat = triangle.material;
-            if (triangle.colorBaked) {
-                s_bakedMat.color = triangle.bakedColor;
-                effectiveMat = &s_bakedMat;
-            }
             JET_EMIT_TRI(vA, vB, vC, effectiveMat,
                          &meshSource->vertices[triangle.v1].uv,
                          &meshSource->vertices[triangle.v2].uv,
@@ -1508,7 +1628,7 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
         const Vector3 cC = cameraPosition(meshSource->vertices[triangle.v3].position);
         RenderVertex clippedInput[3] = { vA.expand(), vB.expand(), vC.expand() };
 #if TEXTURE_MAPPING
-        if (!triangle.colorBaked && triangle.material && triangle.material->diffuseMap) {
+        if (effectiveMat && effectiveMat->diffuseMap) {
             clippedInput[0].uv = meshSource->vertices[triangle.v1].uv;
             clippedInput[1].uv = meshSource->vertices[triangle.v2].uv;
             clippedInput[2].uv = meshSource->vertices[triangle.v3].uv;
@@ -1557,14 +1677,15 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
             polyN = farN;
             for (int i = 0; i < polyN; ++i) poly[i] = farPoly[i];
         }
-        Material* effectiveMat = triangle.material;
-        if (triangle.colorBaked) { s_bakedMat.color = triangle.bakedColor; effectiveMat = &s_bakedMat; }
         for (int i = 1; i + 1 < polyN; ++i) {
             JET_EMIT_TRI(poly[0], poly[i], poly[i+1], effectiveMat, &poly[0].uv, &poly[i].uv, &poly[i+1].uv);
         }
         #undef JET_EMIT_TRI
         #undef JET_UV_ARGS
     }
+
+    } // own mesh and instances
+
 }
 
 } // namespace Renderer

@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <new>
+#include <algorithm>
 #if defined(ESP_PLATFORM)
 #include "esp_heap_caps.h"
 #endif
@@ -13,6 +14,48 @@ namespace Renderer
 
     Object::Object()        
     {
+    }
+
+    Object::InstanceTransform Object::InstanceTransform::rotated(const Vector3& degrees, const Vector3& position) {
+        // Poses can be authored before the first Scene initializes the tables.
+        if (sin_table[90] == 0) initializeTrigTables();
+        constexpr float unit = 1.0f / FIXED_POINT_SCALE;
+        const float cx=lookupCosI(degrees.x)*unit, sx=lookupSinI(degrees.x)*unit;
+        const float cy=lookupCosI(degrees.y)*unit, sy=lookupSinI(degrees.y)*unit;
+        const float cz=lookupCosI(degrees.z)*unit, sz=lookupSinI(degrees.z)*unit;
+        InstanceTransform t;
+        const float m[9] = {cz*cy, cz*sy*sx-sz*cx, cz*sy*cx+sz*sx,
+                           sz*cy, sz*sy*sx+cz*cx, sz*sy*cx-cz*sx,
+                           -sy, cy*sx, cy*cx};
+        std::copy(m,m+9,t.basis); t.position=position;
+        return t;
+    }
+
+    Object::SharedMesh Object::freezeMesh(Object&& authored) {
+        if (!authored.instances.empty()) return {}; // Flat prototypes avoid cycles/recursive draws.
+        authored.calculateBoundingBox();
+        authored.vertices.shrink_to_fit(); authored.triangles.shrink_to_fit();
+        authored.cachePositions();
+        return std::make_shared<const Object>(std::move(authored));
+    }
+
+    bool Object::addInstance(SharedMesh mesh, const InstanceTransform& transform, Material* materialOverride,
+                             TriangleMaterials triangleMaterials) {
+        if (!mesh || mesh.get()==this || !mesh->instances.empty()) return false;
+        if (triangleMaterials && triangleMaterials->size()!=mesh->triangles.size()) return false;
+        instances.push_back({std::move(mesh),transform,materialOverride,std::move(triangleMaterials)});
+        return true;
+    }
+
+    size_t Object::vertexCount() const {
+        size_t n=vertices.size();
+        for (const auto& instance:instances) if (instance.mesh) n+=instance.mesh->vertices.size();
+        return n;
+    }
+    size_t Object::triangleCount() const {
+        size_t n=triangles.size();
+        for (const auto& instance:instances) if (instance.mesh) n+=instance.mesh->triangles.size();
+        return n;
     }
 
     bool Object::cachePositions() {
@@ -36,29 +79,74 @@ namespace Renderer
         positionCache = std::shared_ptr<const Vector3>(positions,
             [](const Vector3* p) { std::free(const_cast<Vector3*>(p)); });
         positionCacheSize = vertices.size();
+        // Preserve the public one-position-per-vertex stream. A small map
+        // points duplicates at their earliest vertex, whose projection is
+        // already available when Scene reaches them. Do not merge normals/UVs.
+        const size_t count = vertices.size();
+        if (count >= 8 && count <= size_t(UINT16_MAX) + 1) {
+            auto allocateMap = [count]() -> uint16_t* {
+#if defined(ESP_PLATFORM) && defined(CONFIG_SPIRAM)
+                return static_cast<uint16_t*>(heap_caps_malloc(count * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+#else
+                return static_cast<uint16_t*>(std::malloc(count * sizeof(uint16_t)));
+#endif
+            };
+            uint16_t* order = allocateMap();
+            uint16_t* sources = allocateMap();
+            if (!order || !sources) { std::free(order); std::free(sources); return true; }
+            for (size_t i = 0; i < count; ++i) order[i] = (uint16_t)i;
+            std::sort(order, order + count, [positions](uint16_t a, uint16_t b) {
+                const Vector3 &pa = positions[a], &pb = positions[b];
+                if (pa.x != pb.x) return pa.x < pb.x;
+                if (pa.y != pb.y) return pa.y < pb.y;
+                if (pa.z != pb.z) return pa.z < pb.z;
+                return a < b;
+            });
+            size_t duplicates = 0;
+            uint16_t first = order[0];
+            for (size_t i = 0; i < count; ++i) {
+                const uint16_t index = order[i];
+                const Vector3 &p = positions[index], &q = positions[first];
+                if (p.x != q.x || p.y != q.y || p.z != q.z) first = index;
+                sources[index] = first;
+                duplicates += first != index;
+            }
+            std::free(order);
+            // Avoid an extra stream for meshes with little position reuse.
+            if (duplicates >= count / 4)
+                positionSources = std::shared_ptr<const uint16_t>(sources,
+                    [](const uint16_t* p) { std::free(const_cast<uint16_t*>(p)); });
+            else std::free(sources);
+        }
         return true;
     }
 
     void Object::calculateBoundingBox() {
         invalidatePositions();
-        if (vertices.empty()) {
-            boundingBoxMin = {0, 0, 0};
-            boundingBoxMax = {0, 0, 0};
-            return;
+        bool first=true;
+        auto include = [&](const Vector3& p) {
+            if (first) { boundingBoxMin=boundingBoxMax=p; first=false; }
+            else {
+                boundingBoxMin.x=std::min(boundingBoxMin.x,p.x); boundingBoxMax.x=std::max(boundingBoxMax.x,p.x);
+                boundingBoxMin.y=std::min(boundingBoxMin.y,p.y); boundingBoxMax.y=std::max(boundingBoxMax.y,p.y);
+                boundingBoxMin.z=std::min(boundingBoxMin.z,p.z); boundingBoxMax.z=std::max(boundingBoxMax.z,p.z);
+            }
+        };
+        for (const auto& vertex:vertices) include(vertex.position);
+        for (const auto& instance:instances) {
+            if (!instance.mesh || instance.mesh->vertices.empty()) continue;
+            const auto& lo=instance.mesh->boundingBoxMin; const auto& hi=instance.mesh->boundingBoxMax;
+            const auto& t=instance.transform; const float* m=t.basis;
+            for (int i=0;i<8;++i) {
+                const float x=(float)((i&1)?hi.x:lo.x), y=(float)((i&2)?hi.y:lo.y), z=(float)((i&4)?hi.z:lo.z);
+                const float px=m[0]*x+m[1]*y+m[2]*z+t.position.x;
+                const float py=m[3]*x+m[4]*y+m[5]*z+t.position.y;
+                const float pz=m[6]*x+m[7]*y+m[8]*z+t.position.z;
+                include({(int32_t)std::floor(px),(int32_t)std::floor(py),(int32_t)std::floor(pz)});
+                include({(int32_t)std::ceil(px),(int32_t)std::ceil(py),(int32_t)std::ceil(pz)});
+            }
         }
-
-        boundingBoxMin.assign(vertices[0].position);
-        boundingBoxMax.assign(vertices[0].position);
-
-        for (const auto& vertex : vertices) {
-            if (vertex.position.x < boundingBoxMin.x) boundingBoxMin.x = vertex.position.x;
-            if (vertex.position.y < boundingBoxMin.y) boundingBoxMin.y = vertex.position.y;
-            if (vertex.position.z < boundingBoxMin.z) boundingBoxMin.z = vertex.position.z;
-
-            if (vertex.position.x > boundingBoxMax.x) boundingBoxMax.x = vertex.position.x;
-            if (vertex.position.y > boundingBoxMax.y) boundingBoxMax.y = vertex.position.y;
-            if (vertex.position.z > boundingBoxMax.z) boundingBoxMax.z = vertex.position.z;
-        }
+        if (first) boundingBoxMin=boundingBoxMax={0,0,0};
 
         centreVolume = (boundingBoxMin + boundingBoxMax).divide(2);
     }
@@ -100,6 +188,16 @@ namespace Renderer
             rotXYZ(vert.normal);
         }
 
+        if (!instances.empty()) {
+            const auto r=InstanceTransform::rotated(rotation);
+            for (auto& instance:instances) {
+                const auto old=instance.transform;
+                for (int row=0;row<3;++row) for(int col=0;col<3;++col)
+                    instance.transform.basis[row*3+col]=r.basis[row*3]*old.basis[col]+r.basis[row*3+1]*old.basis[3+col]+r.basis[row*3+2]*old.basis[6+col];
+                rotXYZ(instance.transform.position);
+            }
+        }
+
         rotation.assign(0, 0, 0);
         calculateBoundingBox();
     }
@@ -119,6 +217,21 @@ namespace Renderer
             // Normals are unit-direction vectors and must not be scaled.
         }
 
+        std::vector<std::pair<const Object*, SharedMesh>> scaled;
+        for (auto& instance:instances) {
+            if (!instance.mesh) continue;
+            const Object* key=instance.mesh.get();
+            auto found=std::find_if(scaled.begin(),scaled.end(),[key](const auto& p){return p.first==key;});
+            if (found==scaled.end()) {
+                Object copy=*instance.mesh; copy.bakeScale(numerator,denominator);
+                scaled.emplace_back(key,freezeMesh(std::move(copy))); found=scaled.end()-1;
+            }
+            instance.mesh=found->second;
+            auto& p=instance.transform.position;
+            p.x=(int32_t)((int64_t)p.x*numerator/denominator);
+            p.y=(int32_t)((int64_t)p.y*numerator/denominator);
+            p.z=(int32_t)((int64_t)p.z*numerator/denominator);
+        }
         calculateBoundingBox();
     }
 

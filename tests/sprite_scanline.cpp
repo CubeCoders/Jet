@@ -1,4 +1,4 @@
-#include "Scene.hpp"
+#include "Sprite2D.hpp"
 #include <algorithm>
 #include <cstdio>
 #include <vector>
@@ -7,7 +7,7 @@ using namespace Renderer;
 namespace {
 constexpr int width = 137, height = 43;
 void reference(std::vector<uint16_t>& pixels, const Sprite2D& sp) {
-    if (!sp.enabled || !sp.material) return;
+    if (!sp.enabled || !sp.material || sp.scale <= 0) return;
     const int alpha = sp.alpha * sp.material->alpha / 255;
     if (!alpha) return;
     const Texture* tex = sp.material->diffuseMap;
@@ -42,7 +42,6 @@ void reference(std::vector<uint16_t>& pixels, const Sprite2D& sp) {
 }
 
 int main() {
-    static_assert(!HALF_WIDTH_BUFFERS && !FIELD_BUFFERS, "Use a full-width non-interlaced test configuration");
     std::vector<uint16_t> actual(width * height), expected(actual.size()), texels(47 * 17);
     for (size_t i = 0; i < texels.size(); ++i) texels[i] = i % 5 ? (uint16_t)(i * 941) : 0x7bef;
     Texture texture(47, 17, texels.data(), true, 0x7bef);
@@ -50,13 +49,14 @@ int main() {
     Sprite2D sprite = makeSolidRect(0, 0, 47, 17, &material);
     Sprite2D underlay = makeSolidRect(3, 2, width - 6, height - 4, &underlayMaterial);
     underlay.alpha = 71; underlay.zOrder = -1;
-    Scene scene(actual.data(), nullptr, width, height);
-    Scene background(expected.data(), nullptr, width, height);
-    Camera camera;
-    scene.setCamera(&camera); scene.setClearBuffer(false);
-    background.setCamera(&camera); background.setClearBuffer(false);
-    // Register in reverse order to verify the stable z-order pass as well.
-    scene.addSprite(&sprite); scene.addSprite(&underlay);
+    Sprite2D disabled = underlay;
+    disabled.enabled = false;
+    Sprite2D invalid = underlay;
+    invalid.scale = 0;
+    Sprite2D noMaterial = underlay;
+    noMaterial.material = nullptr;
+    Sprite2D* ordered[] = {nullptr, &underlay, &disabled, &invalid, &noMaterial, &sprite};
+    std::vector<uint16_t> row(width + 2);
     unsigned frames = 0;
     for (int transform = 0; transform < 16; ++transform)
     for (int scale : {1, 2, 3, 4}) for (int x : {-151, -19, -1, 0, 7, 120, 145})
@@ -68,14 +68,27 @@ int main() {
                 material.alpha = (uint8_t)matAlpha; material.diffuseMap = kind ? &texture : nullptr;
                 texture.hasAlpha = kind == 2;
                 for (size_t i = 0; i < actual.size(); ++i) actual[i] = expected[i] = (uint16_t)(i * 7919);
-                background.render(); // Same configured PostFX, without sprites.
                 reference(expected, underlay); reference(expected, sprite);
-                scene.render();
+                for (bool swapped : {false, true}) {
+                    for (int yy = 0; yy < height; ++yy) {
+                        row.front() = 0x1234; row.back() = 0xabcd;
+                        for (int xx = 0; xx < width; ++xx) {
+                            uint16_t pixel = uint16_t((yy * width + xx) * 7919);
+                            row[xx + 1] = swapped ? uint16_t((pixel << 8) | (pixel >> 8)) : pixel;
+                        }
+                        compositeSprites(row.data() + 1, width, yy, ordered, 6, swapped);
+                        if (row.front() != 0x1234 || row.back() != 0xabcd) return 2;
+                        for (int xx = 0; xx < width; ++xx) {
+                            uint16_t pixel = row[xx + 1];
+                            actual[yy * width + xx] = swapped ? uint16_t((pixel << 8) | (pixel >> 8)) : pixel;
+                        }
+                    }
                 if (actual != expected) {
                     std::printf("Sprite mismatch: transform %d scale %d xy %d,%d kind %d alpha %d/%d add %d\n",
                                 transform, scale, x, y, kind, alpha, matAlpha, add); return 1;
                 }
+                }
                 ++frames;
             }
-    std::printf("Sprite compositor: %u clipped/scaled/ordered frames match\n", frames);
+    std::printf("Sprite scanline compositor (both byte orders): %u clipped/scaled/ordered frames match\n", frames);
 }
