@@ -38,5 +38,17 @@ int main() {
     // Equal-depth surfaces keep insertion order within the bucket.
     scene.getObjects().clear();quad(equalDepth,480,&red);
     scene.addObject(&nearObject);scene.addObject(&equalDepth);expect(red.color);
+    // Close surfaces share even a 128-way bucket. Refinement must be
+    // opt-in, independent of insertion order, and reset when disabled.
+    Object closeObject;quad(closeObject,510,&red);
+    scene.getObjects().clear();scene.addObject(&nearObject);scene.addObject(&closeObject);expect(red.color);
+    nearObject.preciseDepthSort=true;expect(green.color);
+    nearObject.preciseDepthSort=false;expect(red.color);
+    closeObject.preciseDepthSort=true;expect(green.color);
+    closeObject.zBias=1;expect(red.color);closeObject.zBias=0;
+    scene.addObject(&background);expect(green.color);
+    scene.addObject(&overlay);expect(blue.color);
+    scene.getObjects().clear();nearObject.preciseDepthSort=true;
+    scene.addObject(&nearObject);scene.addObject(&equalDepth);expect(red.color);
     scene.getObjects().clear();
 }

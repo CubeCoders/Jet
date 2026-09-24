@@ -38,6 +38,15 @@
 #define JET_CONSTANT_NORMAL_LIGHTING 1
 #endif
 
+// Optional accurate depth for desktop/high-quality builds. Interpolating
+// camera-space Z linearly in screen space lets large sloping faces leak.
+#ifndef JET_PERSPECTIVE_DEPTH
+#define JET_PERSPECTIVE_DEPTH 0
+#endif
+#if JET_PERSPECTIVE_DEPTH && (!Z_BUFFERING || FAST_Z)
+#error JET_PERSPECTIVE_DEPTH requires Z_BUFFERING and FAST_Z=0
+#endif
+
 // Desktop/high-resolution UV interpolation: use full edge weights and double
 // reciprocals instead of the compact fixed-point path. Opt-in so embedded
 // builds retain their existing code size, arithmetic and timing.
@@ -447,6 +456,11 @@ namespace Renderer
             && !diffuseMap
     #endif
             ;
+#endif
+#if JET_PERSPECTIVE_DEPTH
+        const double depthInvZ1 = 1.0 / v1.position.z;
+        const double depthInvZ2 = 1.0 / v2.position.z;
+        const double depthInvZ3 = 1.0 / v3.position.z;
 #endif
         int32_t nearPlane = camera->nearPlane;
         int32_t farPlane = camera->farPlane;
@@ -1645,8 +1659,16 @@ namespace Renderer
                     // as well as memory traffic. Other consumers keep precise Z.
                     int32_t z = 0;
                     if constexpr (perPixelZ) {
-                        z = wideDepth ? int32_t(wideZ)
-                            : (v1.position.z*w0 + v2.position.z*w1 + v3.position.z*w2) / denom;
+#if JET_PERSPECTIVE_DEPTH
+                        if constexpr (UseDepth) {
+                            const double inverseZ = depthInvZ1*ew0 + depthInvZ2*ew1 + depthInvZ3*ew2;
+                            z = int32_t(double(denom64) / inverseZ);
+                        } else
+#endif
+                        {
+                            z = wideDepth ? int32_t(wideZ)
+                                : (v1.position.z*w0 + v2.position.z*w1 + v3.position.z*w2) / denom;
+                        }
                         if (z < nearPlane || z > farPlane) continue;
                     }
 

@@ -276,6 +276,7 @@ private:
     static_assert(SortDepthBucketCount > 0 && SortBucketCount <= 256,
         "JET_SORT_DEPTH_BUCKETS must fit byte keys (1..254, or 1..127 with opaque front-to-back sorting)");
     std::vector<uint8_t> renderBuckets;
+    bool preciseSortBuckets[SortBucketCount] = {};
     // Painter's-sort output as indices into renderQueue, rebuilt by
     // prepareFrame() each frame. Sorting (scattering) 4-byte indices
     // instead of whole RenderTri structs avoids a full second copy of the

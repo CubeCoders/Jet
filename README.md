@@ -39,7 +39,12 @@ for the available options.
 - Flat, Gouraud, Phong and wireframe shading modes (per material).
 - Affine and perspective-correct texture mapping; optional bilinear filtering.
 - Optional Z-buffering, or painter's-algorithm sorting (per-object and/or
-  per-triangle).
+  per-triangle). `Object::preciseDepthSort` refines occupied painter buckets by
+  triangle mean depth for overlapping parts, without a depth allocation. It is
+  opt-in and does not resolve intersecting/cyclic polygons.
+- Optional `JET_PERSPECTIVE_DEPTH` reciprocal-Z interpolation for desktop depth
+  accuracy on large sloping faces (`Z_BUFFERING=1`, `FAST_Z=0`). It adds a pixel
+  division and defaults off.
 - Backface and frontface culling, depth bias for decals and shadows, per-object
   blend modes (replace, add, subtract, multiply, average, XOR).
 - Screen-door alpha and noise-based dithering for transparency.

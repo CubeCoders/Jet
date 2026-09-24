@@ -639,6 +639,7 @@ void Scene::prepareFrame() {
                          + (int)(camSinX * camera->fovFactor / 1024.0f);
 
     renderQueue.clear();
+    std::fill(std::begin(preciseSortBuckets), std::end(preciseSortBuckets), false);
     renderBuckets.clear();
 #if TEXTURE_MAPPING
     textureQueue.clear();
@@ -797,6 +798,22 @@ void Scene::prepareFrame() {
                 pos[i] = pos[i - 1] + counts[i - 1];
             for (int32_t i = 0; i < N; ++i)
                 renderOrder[pos[renderBuckets[i]]++] = i;
+            // Refine only buckets touched by opted-in objects. pos[] now holds
+            // each bucket's end, and queue index breaks exact-depth ties in
+            // submission order. std::sort operates in place without scratch
+            // allocations or a per-pixel depth buffer.
+            if (!renderer->isDepthTestingEnabled()) {
+                for (int b = 1; b < SortBucketCount - 1; ++b) {
+                    if (!preciseSortBuckets[b] || counts[b] < 2) continue;
+                    std::sort(renderOrder.begin() + pos[b - 1], renderOrder.begin() + pos[b],
+                        [&](int32_t a, int32_t c) {
+                            const auto& x = renderQueue[a]; const auto& y = renderQueue[c];
+                            const int32_t xz = x.avgZ - int32_t(x.zBias) * 256;
+                            const int32_t yz = y.avgZ - int32_t(y.zBias) * 256;
+                            return xz != yz ? xz > yz : a < c;
+                        });
+                }
+            }
         } else if (N == 1) {
             renderOrder[0] = 0;
         }
@@ -1487,6 +1504,7 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
             }
         }
         renderBuckets.push_back(bucket);
+        if (obj->preciseDepthSort) preciseSortBuckets[bucket] = true;
     };
 
     // Render triangles with backface culling and shading

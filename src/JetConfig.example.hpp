@@ -39,6 +39,13 @@
 // enough when triangles are small relative to the screen.
 #define FAST_Z 1
 
+// JET_PERSPECTIVE_DEPTH: Interpolate reciprocal Z for geometrically correct
+// per-pixel depth on large/sloping triangles. Requires Z_BUFFERING=1 and
+// FAST_Z=0. Opt-in: adds a division per tested pixel, intended for desktop
+// quality rendering. Disabled configurations retain their original cost.
+#define JET_PERSPECTIVE_DEPTH 0
+
+
 // LAZY_Z: Use the maximum (farthest) vertex Z instead of the average.
 // Only meaningful when FAST_Z is enabled. Avoids over-darkening large
 // near-camera triangles with Z_BRIGHTNESS, at the cost of slightly less

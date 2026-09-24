@@ -292,3 +292,18 @@ checks two overlapping surfaces 70 units apart with a 9000-unit far plane,
 reversed insertion order, equal-depth stability, overlays and the precedence
 of background over the overlay flag. The film native suite runs this test.
 Other projects retain the default 64 buckets unless configured explicitly.
+
+
+The painter-bucket regression also checks opt-in refinement for surfaces within
+one bucket, reset when disabled, either object requesting refinement, depth bias,
+stable exact-depth ties and unchanged background/overlay bands. Refinement uses
+in-place sorting and one boolean per bucket; it adds no per-pixel storage.
+
+## Perspective depth
+
+`perspective_depth.cpp` compares the rasterizer against analytic reciprocal-Z
+interpolation. Sloping and constant-depth faces are submitted in both orders,
+at normal and very large projected sizes, with colour/depth buffer guards.
+The film's desktop-quality CMake target runs it with `JET_PERSPECTIVE_DEPTH=1`,
+`Z_BUFFERING=1`, `FAST_Z=0` and full-width buffers. Other builds retain their
+original affine depth path unless explicitly enabled.

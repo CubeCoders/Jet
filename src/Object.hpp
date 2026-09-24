@@ -109,6 +109,12 @@ public:
     /// 0 disables.
     int8_t zBias = 0;
 
+    /// Refine painter ordering within occupied depth buckets using exact
+    /// triangle mean depths. Useful for close, overlapping mesh parts (e.g.
+    /// wheels and bodywork). Unmarked buckets retain the linear-time sorter.
+    /// This does not solve intersecting triangles or replace a depth buffer.
+    bool preciseDepthSort = false;
+
     bool transformScale = false;    ///< When true, scale is included in the world transform; otherwise scale is baked-in.
     bool enabled = true;            ///< When false, the object is skipped entirely.
 
