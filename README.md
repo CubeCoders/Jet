@@ -12,20 +12,39 @@ Jet uses integer arithmetic in the rasterisation hot path and native 16-bit
 RGB565 colour for output to embedded displays. It supports flat-shaded, lit
 and textured geometry for low-poly games and visualisations.
 
-On an ESP32-S3, Jet reaches a peak throughput of **70,000 triangles/second**
-(flat-shaded). The demo below runs at a 480×320 output resolution and 60 FPS
-using half-width, interlaced field buffers. Throughput varies with scene
-complexity, triangle size and enabled rendering features.
+On an ESP32-S3, Jet achieves **up to 100k tris/sec** in the
+[tropical island example](https://github.com/CubeCoders/JetExamples/blob/main/esp32-tropical-island/VALIDATION.md).
+This measures rasterized triangles over render time, excluding display scanout
+and frame pacing. Throughput varies with scene complexity, triangle size and
+enabled rendering features.
 
 ## Community
 
 Share projects and get help on the [Discord server](https://discord.gg/FSdJYDTEYt).
 
-## Demo
+## Demos and examples
 
-A Wipeout-style game running on an **ESP32-S3 at 60 FPS**:
+Explore [JetExamples](https://github.com/CubeCoders/JetExamples): sixteen standalone
+ESP-IDF projects, from a reusable rotating-cube template and individual feature
+demos to two complete demoscene showcases. The repository includes build
+instructions, reference wiring, and display/SPI configuration for ESP32-S3 and P4.
 
-[![Jet on ESP32-S3: 60 FPS Wipeout-style demo](https://img.youtube.com/vi/aKkb5L-YTTc/hqdefault.jpg)](https://www.youtube.com/watch?v=aKkb5L-YTTc "Jet on ESP32-S3: 60 FPS Wipeout-style demo")
+[**Neon Motorworks**](https://github.com/CubeCoders/JetExamples/tree/main/esp32-neon-car)
+combines runtime OBJ loading, textured Phong paint and environment-mapped windows:
+
+[![Orbiting the car workshop, with glossy paint and reflective windows](docs/media/neon-motorworks.gif)](https://github.com/CubeCoders/JetExamples/tree/main/esp32-neon-car)
+
+These native software captures use the examples' **ESP32-level visuals**:
+480×320 output, RGB565 colour and half-width interlaced field buffers, with
+the performance overlay hidden. Click an image to explore its example.
+
+| Lighting and reflections | Complete showcases |
+| --- | --- |
+| [![Glossy red Utah teapot with Phong lighting](docs/media/lighting-teapot.png)](https://github.com/CubeCoders/JetExamples/tree/main/esp32-lighting-teapot)<br>**Utah teapot** — smooth normals and glossy Phong lighting. | [![ESP 88 city skyline reflected in the river](docs/media/esp88.png)](https://github.com/CubeCoders/JetExamples/tree/main/esp32-neon-film)<br>**ESP 88** — a neon city cinematic with rain, reflections and a car chase. |
+| [![Tropical island with reflected palm trees and sun flares](docs/media/tropical-island.png)](https://github.com/CubeCoders/JetExamples/tree/main/esp32-tropical-island)<br>**Tropical island** — rippled water, reflections and lens flares. | [![MATTER's glossy ceramic knot and orbiting sculptures](docs/media/matter.png)](https://github.com/CubeCoders/JetExamples/tree/main/esp32-matter)<br>**MATTER** — three minutes of procedural sculpture, movement and colour. |
+
+See the [full gallery and build instructions](https://github.com/CubeCoders/JetExamples#build-and-run)
+to run these scenes on your own hardware.
 
 ## Feature highlights
 
