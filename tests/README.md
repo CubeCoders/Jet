@@ -40,7 +40,7 @@ from this directory with the config in `/path/to/config`:
 
 ```sh
 c++ -O2 -std=c++17 -I/path/to/config -I../src affine_textures.cpp \
-  ../src/Renderer.cpp ../src/BlendSpans.cpp ../src/Camera.cpp ../src/TrigLUT.cpp \
+  ../src/Renderer.cpp ../src/TiledSpan.cpp ../src/BlendSpans.cpp ../src/Camera.cpp ../src/TrigLUT.cpp \
   ../src/Material.cpp ../src/Texture.cpp -o affine_textures
 ./affine_textures
 ```
@@ -64,7 +64,7 @@ test (for this fixture, use `Z_BUFFERING=0`). For example:
 
 ```sh
 c++ -O2 -std=c++17 -I/path/to/config -I../src scene_texture_queue.cpp \
-  ../src/Scene.cpp ../src/Sprite2D.cpp ../src/Renderer.cpp ../src/BlendSpans.cpp ../src/Object.cpp ../src/Camera.cpp \
+  ../src/Scene.cpp ../src/Sprite2D.cpp ../src/Renderer.cpp ../src/TiledSpan.cpp ../src/BlendSpans.cpp ../src/Object.cpp ../src/Camera.cpp \
   ../src/TrigLUT.cpp ../src/Material.cpp ../src/Texture.cpp \
   ../src/Light.cpp ../src/PostFX.cpp -o scene_texture_queue
 ./scene_texture_queue
@@ -138,7 +138,7 @@ production firmware.
 
 `sprite_compositor.cpp` checks 96,768 full-width Scene renders against an
 independent compositor: negative/offscreen coordinates, clipping on all
-edges, scale 1–4, combined material/sprite alpha, keyed and solid sprites,
+edges, scale 1Ã¢â‚¬â€œ4, combined material/sprite alpha, keyed and solid sprites,
 additive blending, all 16 combinations of horizontal/vertical flips and
 mirrored halves, and registration in reverse z-order. Build it against
 Jet with the same full-width, non-interlaced configuration as the library,
@@ -365,3 +365,11 @@ and short span tails against the proportional CRT reference. Build with
 The JetExamples CRT native suite runs these five configurations alongside its
 existing layout and scene checks. The ESP 88 native suite runs the depth,
 RGB565, indexed8 and constant-blend fixtures.
+
+## Tiled textures
+
+`tiled_textures.cpp` covers clamped palette tiles, a row-major bilinear oracle,
+coarse mips, optional source caching, hot-cache fallback/hits and span dispatch.
+See [the tiled view contract and build instructions](../docs/TiledTextures.md).
+The [megatexture example](https://github.com/CubeCoders/JetMegatexturesDemo)
+includes the full cache and real-scene integration tests.

@@ -1,3 +1,4 @@
+#include "TiledSpan.hpp"
 #include "Renderer.hpp"
 #include "Specular.hpp"
 #include <algorithm>
@@ -729,14 +730,14 @@ namespace Renderer
             && boundedUV(v1) && boundedUV(v2) && boundedUV(v3);
         int32_t uStepQ16=0, vStepQ16=0;
     #if !BILINEAR_FILTER
-        const bool directRGB565 = diffuseMap && diffuseMap->data && !diffuseMap->palette
+        const bool directRGB565 = diffuseMap && !diffuseMap->tiled && diffuseMap->data && !diffuseMap->palette
             && diffuseMap->addressMode == WRAP
             && diffuseMap->width > 0 && diffuseMap->width <= 1024
             && diffuseMap->height > 0 && diffuseMap->height <= 1024
             && (diffuseMap->width & (diffuseMap->width-1)) == 0
             && (diffuseMap->height & (diffuseMap->height-1)) == 0;
         // Animated palettes retain Texture::getPixel's offset/modulo semantics.
-        const bool directIndexed8 = diffuseMap && diffuseMap->data && diffuseMap->palette
+        const bool directIndexed8 = diffuseMap && !diffuseMap->tiled && diffuseMap->data && diffuseMap->palette
             && diffuseMap->paletteSize <= 0 && diffuseMap->addressMode == WRAP
             && diffuseMap->width > 0 && diffuseMap->width <= 1024
             && diffuseMap->height > 0 && diffuseMap->height <= 1024
@@ -1059,6 +1060,20 @@ namespace Renderer
             // truncation for per-pixel edge math, but the lighting
             // divides are highly sensitive to denom sign/magnitude).
             brightness_dx_step_q16 = (int32_t)((float)bDx * 65536.0f * invDenom64f);
+        }
+#endif
+
+#if TEXTURE_MAPPING && PERSPECTIVE_CORRECT_TEXTURES && FAST_Z && !Z_BUFFERING && !LIGHTING && !Z_BRIGHTNESS && !DEPTH_ALPHA_BLEND
+        const bool tiledSpan=diffuseMap&&diffuseMap->tiled&&usePerspectiveUV
+            &&alpha==255&&material->shadingMode==ShadingMode::UNLIT
+            &&!diffuseMap->screenSpace&&!diffuseMap->reflectionMap&&!diffuseMap->hasAlpha;
+        float tq[3]{},tu[3]{},tv[3]{},tdu=0,tdv=0,tdq=0;
+        if(tiledSpan){
+            const RenderVertex* vertices[]={&v1,&v2,&v3};
+            for(unsigned i=0;i<3;++i){tq[i]=uvInvArea/vertices[i]->position.z;tu[i]=vertices[i]->uv.x*tq[i];tv[i]=vertices[i]->uv.y*tq[i];}
+            tdq=tq[0]*dw0_dx_step+tq[1]*dw1_dx_step+tq[2]*dw2_dx_step;
+            tdu=tu[0]*dw0_dx_step+tu[1]*dw1_dx_step+tu[2]*dw2_dx_step;
+            tdv=tv[0]*dw0_dx_step+tv[1]*dw1_dx_step+tv[2]*dw2_dx_step;
         }
 #endif
 
@@ -1406,6 +1421,21 @@ namespace Renderer
       #endif
     #endif
                 }
+
+#if TEXTURE_MAPPING && PERSPECTIVE_CORRECT_TEXTURES && FAST_Z && !Z_BUFFERING && !LIGHTING && !Z_BRIGHTNESS && !DEPTH_ALPHA_BLEND
+                if(tiledSpan&&spans.valid&&!diffuseMap->tiled->exactPerspective){
+                    const float q=tq[0]*ew0+tq[1]*ew1+tq[2]*ew2;
+                    const float u=tu[0]*ew0+tu[1]*ew1+tu[2]*ew2;
+                    const float v=tv[0]*ew0+tv[1]*ew1+tv[2]*ew2;
+                    const int count=(xEnd-xStart)/xStep+1;
+                    const float lastQ=q+tdq*(count-1);
+                    if(q>=1e-20f&&lastQ>=1e-20f&&q<=1e20f&&lastQ<=1e20f){
+                        const int offset=(FIELD_BUFFERS?y/2:y)*(screenWidth/xStep)+xStart/xStep;
+                        drawTiledSpan(*diffuseMap->tiled,framebuffer+offset,count,u,v,q,tdu,tdv,tdq,yBandMin>0?1:0,diffuseMap->tiled->exactPerspective,diffuseMap->getTileFilter());
+                        continue;
+                    }
+                }
+#endif
 
     #if JET_FAST_SIMPLE_SPANS
                 if (useFastSimpleSpan)
@@ -1867,7 +1897,9 @@ namespace Renderer
 
                         // Sample color from material
     #if !BILINEAR_FILTER
-                        if (directRGB565) {
+                        if (diffuseMap->tiled) {
+                            color=diffuseMap->tiled->sample(uv.x,uv.y,((x&14)==0)?(yBandMin>0?1:0):-1);
+                        } else if (directRGB565) {
                             const unsigned tx=((unsigned)uv.x & (FIXED_POINT_SCALE-1))*diffuseMap->width/FIXED_POINT_SCALE;
                             const unsigned ty=((unsigned)uv.y & (FIXED_POINT_SCALE-1))*diffuseMap->height/FIXED_POINT_SCALE;
                             color=diffuseMap->data[ty*diffuseMap->width+tx];

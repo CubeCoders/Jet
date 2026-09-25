@@ -49,6 +49,16 @@ the performance overlay hidden. Click an image to explore its example.
 See the [full gallery and build instructions](https://github.com/CubeCoders/JetExamples#build-and-run)
 to run these scenes on your own hardware.
 
+
+### Experimental tiled megatextures
+
+The [ESP32-S3 megatexture demo](https://github.com/CubeCoders/JetMegatexturesDemo)
+adapts James D. Lambert's N64 chapel using paletted tiled textures and an
+application-managed cache of bilinear samples. Jet supplies opt-in tiled views,
+nearest/bilinear/three-point/cached sampling and adaptive perspective spans.
+See [the API contract and limitations](docs/TiledTextures.md).
+
+
 ## Feature highlights
 
 Compile-time switches in `JetConfig.hpp` let you disable features to reduce

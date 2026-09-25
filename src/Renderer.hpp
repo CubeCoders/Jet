@@ -225,6 +225,9 @@ class Rasterizer
         /// @return RGB565 colour.
         uint16_t grayscaleToRGB565(uint8_t grayscale);
 
+        /// @brief Read the caller-owned colour buffer; does not transfer ownership.
+        const uint16_t* getFramebuffer() const { return framebuffer; }
+
         /// @brief Replace just the colour buffer pointer.
         /// @param newBuffer New caller-owned RGB565 buffer.
         void setFramebuffer(uint16_t *newBuffer) { framebuffer = newBuffer; }

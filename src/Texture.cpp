@@ -13,6 +13,14 @@ namespace Renderer
 
 uint16_t Texture::getPixel(int u, int v)
 {
+    if(tiled){
+#if BILINEAR_FILTER
+        if(getTileFilter()==TileFilter::CachedBilinear)return tiled->sampleHot(u,v);
+        if(getTileFilter()==TileFilter::ThreePoint)return tiled->sampleThreePoint(u,v);
+        if(getTileFilter()==TileFilter::Bilinear)return tiled->sampleBilinear(u,v);
+#endif
+        return tiled->sample(u,v);
+    }
     switch (addressMode)
     {
     case WRAP:

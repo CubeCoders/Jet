@@ -5,6 +5,7 @@
 #include <vector>
 #include "Shader.hpp"
 #include "JetConfig.hpp"
+#include "TileTexture.hpp"
 
 namespace Renderer
 {
@@ -20,6 +21,7 @@ namespace Renderer
     class Texture
     {
     public:
+        const TileTexture* tiled = nullptr; ///< Experimental immutable tile-cache view.
         int width;                          ///< Width in pixels.
         int height;                         ///< Height in pixels.
         uint16_t *data;                     ///< Pixel data; RGB565 unless `palette` is set, in which case it is paletted indices.
@@ -32,7 +34,16 @@ namespace Renderer
         int       paletteOffset = 0;        ///< Current animation offset; added to every index before lookup.
 
         bool bilinear = BILINEAR_FILTER != 0; ///< Per-texture filter when BILINEAR_FILTER is compiled in.
-                                             ///< false selects nearest; palette textures use nearest.
+                                             ///< false selects nearest; ordinary palette textures use nearest.
+                                             ///< Experimental tiled palette textures select bilinear or three-point via tiledFilter.
+        TileFilter tiledFilter = TileFilter::Bilinear; ///< Filter for experimental tiled textures.
+        TileFilter getTileFilter() const {
+#if BILINEAR_FILTER
+            return bilinear?tiledFilter:TileFilter::Nearest;
+#else
+            return TileFilter::Nearest;
+#endif
+        }
         bool reflectionMap = false;         ///< When true, sampled via reflected view direction instead of UV.
         char* name = nullptr;               ///< Optional name for asset lookup.
 
