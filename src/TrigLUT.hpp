@@ -5,6 +5,11 @@
 #include "FastMath.hpp"
 #include "JetConfig.hpp"
 
+// Preserve the public full-table layout unless compact storage is requested.
+#ifndef JET_COMPACT_TRIG_TABLE
+#define JET_COMPACT_TRIG_TABLE 0
+#endif
+
 namespace Renderer
 {
     const int ANGLE_MAX = 360;
@@ -43,7 +48,23 @@ namespace Renderer
     const int FLOAT_SIN_ANGLE_MAX = 360 * FLOAT_SIN_SUBDIVISIONS;
     const int FLOAT_TAN_ANGLE_MAX = 360 * FLOAT_TAN_SUBDIVISIONS;
     
+#if JET_COMPACT_TRIG_TABLE
+    constexpr int FLOAT_SIN_QUARTER = 90 * FLOAT_SIN_SUBDIVISIONS;
+    extern float float_sin_quarter[FLOAT_SIN_QUARTER + 1];
+    extern float float_sin_half_turn;
+    inline float lookupSinIndex(int idx) {
+        // Keep the libm half-turn residual, including its sign, for compatibility.
+        if (idx == 2 * FLOAT_SIN_QUARTER) return float_sin_half_turn;
+        const bool negative = idx > 2 * FLOAT_SIN_QUARTER;
+        if (negative) idx -= 2 * FLOAT_SIN_QUARTER;
+        if (idx > FLOAT_SIN_QUARTER) idx = 2 * FLOAT_SIN_QUARTER - idx;
+        const float value = float_sin_quarter[idx];
+        return negative ? -value : value;
+    }
+#else
     extern float float_sin_table[FLOAT_SIN_ANGLE_MAX];
+    inline float lookupSinIndex(int idx) { return float_sin_table[idx]; }
+#endif
     #if FLOAT_TAN_CACHE_SCALE > 1
     extern float float_tan_table[FLOAT_TAN_ANGLE_MAX];
     #endif
@@ -52,13 +73,13 @@ namespace Renderer
     inline float lookupSin(float angle) {
         int idx = static_cast<int>((angle * FLOAT_SIN_SUBDIVISIONS)) % FLOAT_SIN_ANGLE_MAX;
         if (idx < 0) idx += FLOAT_SIN_ANGLE_MAX;
-        return float_sin_table[idx];
+        return lookupSinIndex(idx);
     }
 
     inline float lookupCos(float angle) {
         int idx = static_cast<int>((angle + 90.0f) * FLOAT_SIN_SUBDIVISIONS) % FLOAT_SIN_ANGLE_MAX;
         if (idx < 0) idx += FLOAT_SIN_ANGLE_MAX;
-        return float_sin_table[idx];
+        return lookupSinIndex(idx);
     }
 
     inline float lookupTan(float angle) {

@@ -1,0 +1,1191 @@
+{
+  "baseline": [
+    [
+      {
+        "field": "120",
+        "update": "78638",
+        "render": "2479100",
+        "raster": "1773138",
+        "triangles": "43525",
+        "hash": "74475826",
+        "internal": "35627",
+        "psram": "8217972"
+      },
+      {
+        "field": "240",
+        "update": "85316",
+        "render": "2239069",
+        "raster": "1553512",
+        "triangles": "42061",
+        "hash": "5642b88d",
+        "internal": "35627",
+        "psram": "8217972"
+      },
+      {
+        "field": "360",
+        "update": "86198",
+        "render": "2228306",
+        "raster": "1539610",
+        "triangles": "43789",
+        "hash": "bbc00431",
+        "internal": "35627",
+        "psram": "8217972"
+      },
+      {
+        "field": "480",
+        "update": "336480",
+        "render": "3834562",
+        "raster": "2573146",
+        "triangles": "74971",
+        "hash": "f09961aa",
+        "internal": "37031",
+        "psram": "8097492"
+      },
+      {
+        "field": "600",
+        "update": "310959",
+        "render": "3713899",
+        "raster": "2467916",
+        "triangles": "73222",
+        "hash": "cc810b05",
+        "internal": "37031",
+        "psram": "8097492"
+      },
+      {
+        "field": "720",
+        "update": "400490",
+        "render": "2988696",
+        "raster": "1882618",
+        "triangles": "64814",
+        "hash": "6a998293",
+        "internal": "20115",
+        "psram": "7965580"
+      },
+      {
+        "field": "840",
+        "update": "377640",
+        "render": "2258070",
+        "raster": "1272499",
+        "triangles": "55922",
+        "hash": "80bdc5b1",
+        "internal": "20115",
+        "psram": "7965580"
+      },
+      {
+        "field": "960",
+        "update": "432564",
+        "render": "3139756",
+        "raster": "1899110",
+        "triangles": "82231",
+        "hash": "02dc431b",
+        "internal": "20095",
+        "psram": "7962356"
+      },
+      {
+        "field": "1080",
+        "update": "373497",
+        "render": "3383077",
+        "raster": "2054473",
+        "triangles": "90726",
+        "hash": "e8da1c1a",
+        "internal": "19323",
+        "psram": "7963064"
+      },
+      {
+        "field": "1200",
+        "update": "367474",
+        "render": "2966760",
+        "raster": "1922171",
+        "triangles": "67595",
+        "hash": "8375c29b",
+        "internal": "18979",
+        "psram": "8027852"
+      },
+      {
+        "field": "1320",
+        "update": "258293",
+        "render": "2566910",
+        "raster": "1808933",
+        "triangles": "46330",
+        "hash": "96594206",
+        "internal": "18979",
+        "psram": "8027852"
+      },
+      {
+        "field": "1440",
+        "update": "208708",
+        "render": "1981336",
+        "raster": "1397833",
+        "triangles": "35649",
+        "hash": "affdc49a",
+        "internal": "32567",
+        "psram": "8226200"
+      },
+      {
+        "field": "1560",
+        "update": "27490",
+        "render": "256307",
+        "raster": "195820",
+        "triangles": "3738",
+        "hash": "03e4123a",
+        "internal": "32567",
+        "psram": "8226200"
+      },
+      {
+        "field": "1680",
+        "update": "656254",
+        "render": "2328527",
+        "raster": "1322202",
+        "triangles": "55824",
+        "hash": "7a4144c5",
+        "internal": "19515",
+        "psram": "7316376"
+      },
+      {
+        "field": "1800",
+        "update": "699088",
+        "render": "3049488",
+        "raster": "1481549",
+        "triangles": "74028",
+        "hash": "bddda94c",
+        "internal": "20159",
+        "psram": "7211604"
+      },
+      {
+        "field": "1920",
+        "update": "704596",
+        "render": "2542158",
+        "raster": "1076776",
+        "triangles": "75752",
+        "hash": "19d077cf",
+        "internal": "20159",
+        "psram": "7211604"
+      },
+      {
+        "field": "2040",
+        "update": "523808",
+        "render": "4096474",
+        "raster": "1921576",
+        "triangles": "123885",
+        "hash": "a7df153b",
+        "internal": "20279",
+        "psram": "7429772"
+      },
+      {
+        "field": "2160",
+        "update": "435154",
+        "render": "3029061",
+        "raster": "1479716",
+        "triangles": "100952",
+        "hash": "7ccc8fb7",
+        "internal": "20279",
+        "psram": "7429772"
+      },
+      {
+        "field": "2280",
+        "update": "438143",
+        "render": "2522130",
+        "raster": "1218966",
+        "triangles": "73636",
+        "hash": "baeac7c0",
+        "internal": "20279",
+        "psram": "7429772"
+      },
+      {
+        "field": "2400",
+        "update": "481782",
+        "render": "2692541",
+        "raster": "1374829",
+        "triangles": "71815",
+        "hash": "6764bc67",
+        "internal": "19203",
+        "psram": "7672884"
+      },
+      {
+        "field": "2520",
+        "update": "371430",
+        "render": "2681674",
+        "raster": "1406240",
+        "triangles": "72588",
+        "hash": "b8da0b07",
+        "internal": "19203",
+        "psram": "7672884"
+      },
+      {
+        "field": "2640",
+        "update": "370965",
+        "render": "2579093",
+        "raster": "1376771",
+        "triangles": "62429",
+        "hash": "8e0cf6c8",
+        "internal": "19203",
+        "psram": "7672884"
+      },
+      {
+        "field": "2760",
+        "update": "471513",
+        "render": "3227779",
+        "raster": "1681272",
+        "triangles": "91311",
+        "hash": "c5ecd7ae",
+        "internal": "19219",
+        "psram": "7672824"
+      },
+      {
+        "field": "2880",
+        "update": "242042",
+        "render": "1922220",
+        "raster": "971585",
+        "triangles": "50927",
+        "hash": "9faa0dec",
+        "internal": "27799",
+        "psram": "7868848"
+      },
+      {
+        "field": "3000",
+        "update": "135042",
+        "render": "2111936",
+        "raster": "1426730",
+        "triangles": "48090",
+        "hash": "e32e094a",
+        "internal": "27799",
+        "psram": "7868848"
+      },
+      {
+        "field": "3120",
+        "update": "116356",
+        "render": "2653109",
+        "raster": "1947012",
+        "triangles": "43756",
+        "hash": "9aba69f2",
+        "internal": "29947",
+        "psram": "7898640"
+      },
+      {
+        "field": "3240",
+        "update": "77537",
+        "render": "2919483",
+        "raster": "2211484",
+        "triangles": "43350",
+        "hash": "e9afba94",
+        "internal": "29947",
+        "psram": "7898640"
+      },
+      {
+        "field": "3360",
+        "update": "77697",
+        "render": "2761349",
+        "raster": "2060631",
+        "triangles": "42218",
+        "hash": "88361d0f",
+        "internal": "29947",
+        "psram": "7898640"
+      },
+      {
+        "field": "3480",
+        "update": "76013",
+        "render": "2971273",
+        "raster": "2269420",
+        "triangles": "44017",
+        "hash": "b082985a",
+        "internal": "29947",
+        "psram": "7898640"
+      }
+    ],
+    [
+      {
+        "field": "120",
+        "update": "78625",
+        "render": "2479102",
+        "raster": "1773145",
+        "triangles": "43525",
+        "hash": "74475826",
+        "internal": "35627",
+        "psram": "8217972"
+      },
+      {
+        "field": "240",
+        "update": "85306",
+        "render": "2239063",
+        "raster": "1553495",
+        "triangles": "42061",
+        "hash": "5642b88d",
+        "internal": "35627",
+        "psram": "8217972"
+      },
+      {
+        "field": "360",
+        "update": "86205",
+        "render": "2227455",
+        "raster": "1538457",
+        "triangles": "43789",
+        "hash": "bbc00431",
+        "internal": "35627",
+        "psram": "8217972"
+      },
+      {
+        "field": "480",
+        "update": "336251",
+        "render": "3834733",
+        "raster": "2573101",
+        "triangles": "74971",
+        "hash": "f09961aa",
+        "internal": "37031",
+        "psram": "8097492"
+      },
+      {
+        "field": "600",
+        "update": "310631",
+        "render": "3712768",
+        "raster": "2466412",
+        "triangles": "73222",
+        "hash": "cc810b05",
+        "internal": "37031",
+        "psram": "8097492"
+      },
+      {
+        "field": "720",
+        "update": "400348",
+        "render": "2988555",
+        "raster": "1882739",
+        "triangles": "64814",
+        "hash": "6a998293",
+        "internal": "20115",
+        "psram": "7965580"
+      },
+      {
+        "field": "840",
+        "update": "377438",
+        "render": "2256958",
+        "raster": "1271669",
+        "triangles": "55922",
+        "hash": "80bdc5b1",
+        "internal": "20115",
+        "psram": "7965580"
+      },
+      {
+        "field": "960",
+        "update": "432146",
+        "render": "3138827",
+        "raster": "1898631",
+        "triangles": "82231",
+        "hash": "02dc431b",
+        "internal": "20095",
+        "psram": "7962356"
+      },
+      {
+        "field": "1080",
+        "update": "373881",
+        "render": "3380361",
+        "raster": "2051586",
+        "triangles": "90726",
+        "hash": "e8da1c1a",
+        "internal": "19323",
+        "psram": "7963064"
+      },
+      {
+        "field": "1200",
+        "update": "367854",
+        "render": "2965083",
+        "raster": "1920721",
+        "triangles": "67595",
+        "hash": "8375c29b",
+        "internal": "18979",
+        "psram": "8027852"
+      },
+      {
+        "field": "1320",
+        "update": "258074",
+        "render": "2568081",
+        "raster": "1810037",
+        "triangles": "46330",
+        "hash": "96594206",
+        "internal": "18979",
+        "psram": "8027852"
+      },
+      {
+        "field": "1440",
+        "update": "208445",
+        "render": "1981347",
+        "raster": "1397867",
+        "triangles": "35649",
+        "hash": "affdc49a",
+        "internal": "32567",
+        "psram": "8226200"
+      },
+      {
+        "field": "1560",
+        "update": "27650",
+        "render": "256152",
+        "raster": "195606",
+        "triangles": "3738",
+        "hash": "03e4123a",
+        "internal": "32567",
+        "psram": "8226200"
+      },
+      {
+        "field": "1680",
+        "update": "656045",
+        "render": "2328422",
+        "raster": "1322123",
+        "triangles": "55824",
+        "hash": "7a4144c5",
+        "internal": "19515",
+        "psram": "7316376"
+      },
+      {
+        "field": "1800",
+        "update": "699441",
+        "render": "3049167",
+        "raster": "1481314",
+        "triangles": "74028",
+        "hash": "bddda94c",
+        "internal": "20159",
+        "psram": "7211604"
+      },
+      {
+        "field": "1920",
+        "update": "704917",
+        "render": "2542166",
+        "raster": "1076973",
+        "triangles": "75752",
+        "hash": "19d077cf",
+        "internal": "20159",
+        "psram": "7211604"
+      },
+      {
+        "field": "2040",
+        "update": "523784",
+        "render": "4096475",
+        "raster": "1921575",
+        "triangles": "123885",
+        "hash": "a7df153b",
+        "internal": "20279",
+        "psram": "7429772"
+      },
+      {
+        "field": "2160",
+        "update": "435002",
+        "render": "3029099",
+        "raster": "1479451",
+        "triangles": "100952",
+        "hash": "7ccc8fb7",
+        "internal": "20279",
+        "psram": "7429772"
+      },
+      {
+        "field": "2280",
+        "update": "438199",
+        "render": "2521804",
+        "raster": "1218832",
+        "triangles": "73636",
+        "hash": "baeac7c0",
+        "internal": "20279",
+        "psram": "7429772"
+      },
+      {
+        "field": "2400",
+        "update": "481922",
+        "render": "2692482",
+        "raster": "1374829",
+        "triangles": "71815",
+        "hash": "6764bc67",
+        "internal": "19203",
+        "psram": "7672884"
+      },
+      {
+        "field": "2520",
+        "update": "371251",
+        "render": "2680246",
+        "raster": "1404933",
+        "triangles": "72588",
+        "hash": "b8da0b07",
+        "internal": "19203",
+        "psram": "7672884"
+      },
+      {
+        "field": "2640",
+        "update": "371117",
+        "render": "2579553",
+        "raster": "1376952",
+        "triangles": "62429",
+        "hash": "8e0cf6c8",
+        "internal": "19203",
+        "psram": "7672884"
+      },
+      {
+        "field": "2760",
+        "update": "471308",
+        "render": "3227474",
+        "raster": "1680999",
+        "triangles": "91311",
+        "hash": "c5ecd7ae",
+        "internal": "19219",
+        "psram": "7672824"
+      },
+      {
+        "field": "2880",
+        "update": "241960",
+        "render": "1921742",
+        "raster": "971402",
+        "triangles": "50927",
+        "hash": "9faa0dec",
+        "internal": "27799",
+        "psram": "7868848"
+      },
+      {
+        "field": "3000",
+        "update": "135307",
+        "render": "2112493",
+        "raster": "1427011",
+        "triangles": "48090",
+        "hash": "e32e094a",
+        "internal": "27799",
+        "psram": "7868848"
+      },
+      {
+        "field": "3120",
+        "update": "116486",
+        "render": "2645486",
+        "raster": "1939016",
+        "triangles": "43756",
+        "hash": "9aba69f2",
+        "internal": "29947",
+        "psram": "7898640"
+      },
+      {
+        "field": "3240",
+        "update": "76870",
+        "render": "2918692",
+        "raster": "2210456",
+        "triangles": "43350",
+        "hash": "e9afba94",
+        "internal": "29947",
+        "psram": "7898640"
+      },
+      {
+        "field": "3360",
+        "update": "76760",
+        "render": "2767156",
+        "raster": "2067312",
+        "triangles": "42218",
+        "hash": "88361d0f",
+        "internal": "29947",
+        "psram": "7898640"
+      },
+      {
+        "field": "3480",
+        "update": "75795",
+        "render": "2972249",
+        "raster": "2270580",
+        "triangles": "44017",
+        "hash": "b082985a",
+        "internal": "29947",
+        "psram": "7898640"
+      }
+    ]
+  ],
+  "final": [
+    [
+      {
+        "field": "120",
+        "update": "82270",
+        "render": "2435066",
+        "raster": "1745833",
+        "triangles": "43525",
+        "hash": "74475826",
+        "internal": "46171",
+        "psram": "8240500"
+      },
+      {
+        "field": "240",
+        "update": "86291",
+        "render": "2203207",
+        "raster": "1530249",
+        "triangles": "42061",
+        "hash": "5642b88d",
+        "internal": "46171",
+        "psram": "8240500"
+      },
+      {
+        "field": "360",
+        "update": "87509",
+        "render": "2188185",
+        "raster": "1512471",
+        "triangles": "43789",
+        "hash": "bbc00431",
+        "internal": "46171",
+        "psram": "8240500"
+      },
+      {
+        "field": "480",
+        "update": "349156",
+        "render": "3676752",
+        "raster": "2471886",
+        "triangles": "74971",
+        "hash": "f09961aa",
+        "internal": "38067",
+        "psram": "8152176"
+      },
+      {
+        "field": "600",
+        "update": "325505",
+        "render": "3569480",
+        "raster": "2378312",
+        "triangles": "73222",
+        "hash": "cc810b05",
+        "internal": "38067",
+        "psram": "8152176"
+      },
+      {
+        "field": "720",
+        "update": "408237",
+        "render": "2931907",
+        "raster": "1838422",
+        "triangles": "64814",
+        "hash": "6a998293",
+        "internal": "20947",
+        "psram": "8015200"
+      },
+      {
+        "field": "840",
+        "update": "384821",
+        "render": "2274217",
+        "raster": "1259394",
+        "triangles": "55922",
+        "hash": "80bdc5b1",
+        "internal": "20947",
+        "psram": "8015200"
+      },
+      {
+        "field": "960",
+        "update": "434159",
+        "render": "3076735",
+        "raster": "1852266",
+        "triangles": "82231",
+        "hash": "02dc431b",
+        "internal": "22895",
+        "psram": "8009812"
+      },
+      {
+        "field": "1080",
+        "update": "381144",
+        "render": "3284350",
+        "raster": "1989730",
+        "triangles": "90726",
+        "hash": "e8da1c1a",
+        "internal": "22927",
+        "psram": "8009812"
+      },
+      {
+        "field": "1200",
+        "update": "372440",
+        "render": "2871294",
+        "raster": "1872318",
+        "triangles": "67595",
+        "hash": "8375c29b",
+        "internal": "21647",
+        "psram": "8075660"
+      },
+      {
+        "field": "1320",
+        "update": "271000",
+        "render": "2481243",
+        "raster": "1778092",
+        "triangles": "46330",
+        "hash": "96594206",
+        "internal": "21647",
+        "psram": "8075660"
+      },
+      {
+        "field": "1440",
+        "update": "217412",
+        "render": "1913351",
+        "raster": "1371418",
+        "triangles": "35649",
+        "hash": "affdc49a",
+        "internal": "39407",
+        "psram": "8269348"
+      },
+      {
+        "field": "1560",
+        "update": "26570",
+        "render": "253024",
+        "raster": "191194",
+        "triangles": "3738",
+        "hash": "03e4123a",
+        "internal": "39407",
+        "psram": "8269348"
+      },
+      {
+        "field": "1680",
+        "update": "660877",
+        "render": "2278337",
+        "raster": "1284594",
+        "triangles": "55824",
+        "hash": "7a4144c5",
+        "internal": "20575",
+        "psram": "7365704"
+      },
+      {
+        "field": "1800",
+        "update": "715279",
+        "render": "2967339",
+        "raster": "1421733",
+        "triangles": "74028",
+        "hash": "bddda94c",
+        "internal": "22023",
+        "psram": "7305248"
+      },
+      {
+        "field": "1920",
+        "update": "721569",
+        "render": "2490295",
+        "raster": "1031004",
+        "triangles": "75752",
+        "hash": "19d077cf",
+        "internal": "22023",
+        "psram": "7305248"
+      },
+      {
+        "field": "2040",
+        "update": "524571",
+        "render": "3931011",
+        "raster": "1794100",
+        "triangles": "123885",
+        "hash": "a7df153b",
+        "internal": "20283",
+        "psram": "7525748"
+      },
+      {
+        "field": "2160",
+        "update": "442951",
+        "render": "2961981",
+        "raster": "1428528",
+        "triangles": "100952",
+        "hash": "7ccc8fb7",
+        "internal": "20283",
+        "psram": "7525748"
+      },
+      {
+        "field": "2280",
+        "update": "447838",
+        "render": "2504641",
+        "raster": "1192886",
+        "triangles": "73636",
+        "hash": "baeac7c0",
+        "internal": "20283",
+        "psram": "7525748"
+      },
+      {
+        "field": "2400",
+        "update": "485611",
+        "render": "2662241",
+        "raster": "1337107",
+        "triangles": "71815",
+        "hash": "6764bc67",
+        "internal": "22403",
+        "psram": "7765672"
+      },
+      {
+        "field": "2520",
+        "update": "379474",
+        "render": "2629160",
+        "raster": "1354829",
+        "triangles": "72588",
+        "hash": "b8da0b07",
+        "internal": "22403",
+        "psram": "7765672"
+      },
+      {
+        "field": "2640",
+        "update": "378648",
+        "render": "2533631",
+        "raster": "1334261",
+        "triangles": "62429",
+        "hash": "8e0cf6c8",
+        "internal": "22403",
+        "psram": "7765672"
+      },
+      {
+        "field": "2760",
+        "update": "472641",
+        "render": "3100793",
+        "raster": "1606605",
+        "triangles": "91311",
+        "hash": "c5ecd7ae",
+        "internal": "22403",
+        "psram": "7765692"
+      },
+      {
+        "field": "2880",
+        "update": "247142",
+        "render": "1878032",
+        "raster": "940491",
+        "triangles": "50927",
+        "hash": "9faa0dec",
+        "internal": "36011",
+        "psram": "7955804"
+      },
+      {
+        "field": "3000",
+        "update": "139833",
+        "render": "2064238",
+        "raster": "1395481",
+        "triangles": "48090",
+        "hash": "e32e094a",
+        "internal": "36011",
+        "psram": "7955804"
+      },
+      {
+        "field": "3120",
+        "update": "123601",
+        "render": "2605441",
+        "raster": "1915041",
+        "triangles": "43756",
+        "hash": "9aba69f2",
+        "internal": "38159",
+        "psram": "7985492"
+      },
+      {
+        "field": "3240",
+        "update": "88638",
+        "render": "2862465",
+        "raster": "2171892",
+        "triangles": "43350",
+        "hash": "e9afba94",
+        "internal": "38159",
+        "psram": "7985492"
+      },
+      {
+        "field": "3360",
+        "update": "88904",
+        "render": "2702693",
+        "raster": "2019748",
+        "triangles": "42218",
+        "hash": "88361d0f",
+        "internal": "38159",
+        "psram": "7985492"
+      },
+      {
+        "field": "3480",
+        "update": "85933",
+        "render": "2925335",
+        "raster": "2234749",
+        "triangles": "44017",
+        "hash": "b082985a",
+        "internal": "38159",
+        "psram": "7985492"
+      }
+    ],
+    [
+      {
+        "field": "120",
+        "update": "82270",
+        "render": "2434979",
+        "raster": "1745791",
+        "triangles": "43525",
+        "hash": "74475826",
+        "internal": "46171",
+        "psram": "8240500"
+      },
+      {
+        "field": "240",
+        "update": "86372",
+        "render": "2201545",
+        "raster": "1528827",
+        "triangles": "42061",
+        "hash": "5642b88d",
+        "internal": "46171",
+        "psram": "8240500"
+      },
+      {
+        "field": "360",
+        "update": "87769",
+        "render": "2186575",
+        "raster": "1510764",
+        "triangles": "43789",
+        "hash": "bbc00431",
+        "internal": "46171",
+        "psram": "8240500"
+      },
+      {
+        "field": "480",
+        "update": "349251",
+        "render": "3680744",
+        "raster": "2475880",
+        "triangles": "74971",
+        "hash": "f09961aa",
+        "internal": "38067",
+        "psram": "8152176"
+      },
+      {
+        "field": "600",
+        "update": "325305",
+        "render": "3568269",
+        "raster": "2377055",
+        "triangles": "73222",
+        "hash": "cc810b05",
+        "internal": "38067",
+        "psram": "8152176"
+      },
+      {
+        "field": "720",
+        "update": "408197",
+        "render": "2932137",
+        "raster": "1838702",
+        "triangles": "64814",
+        "hash": "6a998293",
+        "internal": "20947",
+        "psram": "8015200"
+      },
+      {
+        "field": "840",
+        "update": "385010",
+        "render": "2274047",
+        "raster": "1259446",
+        "triangles": "55922",
+        "hash": "80bdc5b1",
+        "internal": "20947",
+        "psram": "8015200"
+      },
+      {
+        "field": "960",
+        "update": "434205",
+        "render": "3076710",
+        "raster": "1852104",
+        "triangles": "82231",
+        "hash": "02dc431b",
+        "internal": "22895",
+        "psram": "8009812"
+      },
+      {
+        "field": "1080",
+        "update": "380946",
+        "render": "3281960",
+        "raster": "1987269",
+        "triangles": "90726",
+        "hash": "e8da1c1a",
+        "internal": "22927",
+        "psram": "8009812"
+      },
+      {
+        "field": "1200",
+        "update": "372538",
+        "render": "2871642",
+        "raster": "1872526",
+        "triangles": "67595",
+        "hash": "8375c29b",
+        "internal": "21647",
+        "psram": "8075660"
+      },
+      {
+        "field": "1320",
+        "update": "271074",
+        "render": "2481830",
+        "raster": "1778460",
+        "triangles": "46330",
+        "hash": "96594206",
+        "internal": "21647",
+        "psram": "8075660"
+      },
+      {
+        "field": "1440",
+        "update": "217644",
+        "render": "1913335",
+        "raster": "1371487",
+        "triangles": "35649",
+        "hash": "affdc49a",
+        "internal": "39407",
+        "psram": "8269348"
+      },
+      {
+        "field": "1560",
+        "update": "27180",
+        "render": "253975",
+        "raster": "191480",
+        "triangles": "3738",
+        "hash": "03e4123a",
+        "internal": "39407",
+        "psram": "8269348"
+      },
+      {
+        "field": "1680",
+        "update": "662036",
+        "render": "2279175",
+        "raster": "1284693",
+        "triangles": "55824",
+        "hash": "7a4144c5",
+        "internal": "20575",
+        "psram": "7365704"
+      },
+      {
+        "field": "1800",
+        "update": "714888",
+        "render": "2966978",
+        "raster": "1421307",
+        "triangles": "74028",
+        "hash": "bddda94c",
+        "internal": "22023",
+        "psram": "7305248"
+      },
+      {
+        "field": "1920",
+        "update": "720197",
+        "render": "2488419",
+        "raster": "1029488",
+        "triangles": "75752",
+        "hash": "19d077cf",
+        "internal": "22023",
+        "psram": "7305248"
+      },
+      {
+        "field": "2040",
+        "update": "524448",
+        "render": "3931640",
+        "raster": "1794740",
+        "triangles": "123885",
+        "hash": "a7df153b",
+        "internal": "20283",
+        "psram": "7525748"
+      },
+      {
+        "field": "2160",
+        "update": "443183",
+        "render": "2962043",
+        "raster": "1428748",
+        "triangles": "100952",
+        "hash": "7ccc8fb7",
+        "internal": "20283",
+        "psram": "7525748"
+      },
+      {
+        "field": "2280",
+        "update": "448182",
+        "render": "2504726",
+        "raster": "1193550",
+        "triangles": "73636",
+        "hash": "baeac7c0",
+        "internal": "20283",
+        "psram": "7525748"
+      },
+      {
+        "field": "2400",
+        "update": "485793",
+        "render": "2662181",
+        "raster": "1337011",
+        "triangles": "71815",
+        "hash": "6764bc67",
+        "internal": "22403",
+        "psram": "7765672"
+      },
+      {
+        "field": "2520",
+        "update": "379152",
+        "render": "2627568",
+        "raster": "1352897",
+        "triangles": "72588",
+        "hash": "b8da0b07",
+        "internal": "22403",
+        "psram": "7765672"
+      },
+      {
+        "field": "2640",
+        "update": "379020",
+        "render": "2530993",
+        "raster": "1331285",
+        "triangles": "62429",
+        "hash": "8e0cf6c8",
+        "internal": "22403",
+        "psram": "7765672"
+      },
+      {
+        "field": "2760",
+        "update": "472984",
+        "render": "3101389",
+        "raster": "1606986",
+        "triangles": "91311",
+        "hash": "c5ecd7ae",
+        "internal": "22403",
+        "psram": "7765692"
+      },
+      {
+        "field": "2880",
+        "update": "247108",
+        "render": "1878264",
+        "raster": "940659",
+        "triangles": "50927",
+        "hash": "9faa0dec",
+        "internal": "36011",
+        "psram": "7955804"
+      },
+      {
+        "field": "3000",
+        "update": "139499",
+        "render": "2064495",
+        "raster": "1395410",
+        "triangles": "48090",
+        "hash": "e32e094a",
+        "internal": "36011",
+        "psram": "7955804"
+      },
+      {
+        "field": "3120",
+        "update": "123549",
+        "render": "2606897",
+        "raster": "1916414",
+        "triangles": "43756",
+        "hash": "9aba69f2",
+        "internal": "38159",
+        "psram": "7985492"
+      },
+      {
+        "field": "3240",
+        "update": "88603",
+        "render": "2859795",
+        "raster": "2169432",
+        "triangles": "43350",
+        "hash": "e9afba94",
+        "internal": "38159",
+        "psram": "7985492"
+      },
+      {
+        "field": "3360",
+        "update": "88945",
+        "render": "2696255",
+        "raster": "2013239",
+        "triangles": "42218",
+        "hash": "88361d0f",
+        "internal": "38159",
+        "psram": "7985492"
+      },
+      {
+        "field": "3480",
+        "update": "85872",
+        "render": "2913075",
+        "raster": "2222614",
+        "triangles": "44017",
+        "hash": "b082985a",
+        "internal": "38159",
+        "psram": "7985492"
+      }
+    ]
+  ],
+  "firmware": {
+    "baseline": {
+      "mode": "baseline",
+      "bytes": 599392,
+      "sha256": "8a5e7407468783be48a73dc46d372018fb65e90ff470739d6ec8f1d4168c7092"
+    },
+    "lean": {
+      "mode": "lean",
+      "bytes": 600272,
+      "sha256": "3a23d859126ed5167153cc56ece61f2021f7e21b92f5efe66c93dad7bc827bbf"
+    },
+    "normal": {
+      "mode": "normal",
+      "bytes": 600080,
+      "sha256": "f73341731c97faaf952fc38beca12d0159caccb581651c8240efbd1af902b452"
+    }
+  }
+}

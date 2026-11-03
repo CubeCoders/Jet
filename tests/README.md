@@ -373,3 +373,21 @@ coarse mips, optional source caching, hot-cache fallback/hits and span dispatch.
 See [the tiled view contract and build instructions](../docs/TiledTextures.md).
 The [megatexture example](https://github.com/CubeCoders/JetMegatexturesDemo)
 includes the full cache and real-scene integration tests.
+
+## Compact engine memory layouts
+
+`memory_queue.cpp` prints fingerprints for 672 mixed-material renders. Compare
+its complete output between the original engine and a build with
+`JET_COMPACT_QUEUE=1`, using the same JetConfig.hpp. It covers all built-in
+shading modes, custom shaders, emissive/specular combinations, both windings,
+near/far clipping and framebuffer guards. Compile with assertions enabled.
+Link against Jet, including Scene, Renderer and their normal dependencies.
+
+`trig_storage.cpp` checks sine/cosine lookup against the original mathematical
+table construction, including negative angles, wrapping and quadrant boundaries.
+Build with `src/TrigLUT.cpp` and a matching configuration; exercise both
+`JET_COMPACT_TRIG_TABLE=0` and `1`. It uses a 1e-7 absolute tolerance; the scale-10
+desktop audit additionally compared all 3,600 entries bit-for-bit.
+
+The [memory audit](../docs/memory-bandwidth.md) records the complete ESP88 host
+and S3 comparisons, their limits, and the retained/default-off options.

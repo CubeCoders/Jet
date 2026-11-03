@@ -310,3 +310,16 @@
 #ifndef JET_RUNTIME_DEPTH
 #define JET_RUNTIME_DEPTH 0
 #endif
+
+// Optional compact queue for lighting-enabled scenes dominated by unlit,
+// emissive, additive or water faces. Lighting attributes are stored only for faces that
+// may consume them; custom shaders retain full attributes. With S3 pointers,
+// textures and no picking: 100 -> 56 bytes per unlit triangle, 100 for lit
+// triangles including their side payload. Default 0; measure lit-heavy scenes.
+// #define JET_COMPACT_QUEUE 1
+
+// Optional quarter-wave floating-angle sine table. Keeps angle resolution and
+// float entries; reconstructs other quadrants by symmetry. At scale 10 saves
+// 10,792 bytes of static RAM. Use lookupSin/lookupCos rather than indexing the
+// full float_sin_table symbol, which is absent in this mode. Default 0.
+// #define JET_COMPACT_TRIG_TABLE 1

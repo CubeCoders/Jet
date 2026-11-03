@@ -670,6 +670,9 @@ void Scene::prepareFrame() {
                          + (int)(camSinX * camera->fovFactor / 1024.0f);
 
     renderQueue.clear();
+#if LIGHTING && JET_COMPACT_QUEUE
+    normalQueue.clear();
+#endif
     std::fill(std::begin(preciseSortBuckets), std::end(preciseSortBuckets), false);
     renderBuckets.clear();
 #if TEXTURE_MAPPING
@@ -894,6 +897,15 @@ void Scene::rasterizeBand(int yMin, int yMax, uint8_t* triangleFlags) {
         // same three-vertex average and already culled it against near/far,
         // so drawTriangle skips both the recompute and the redundant test.
         RenderVertex a = t.v1.expand(), b = t.v2.expand(), c = t.v3.expand();
+#if LIGHTING && JET_COMPACT_QUEUE
+        if (t.normalIndex != UINT32_MAX) {
+            const auto& n = normalQueue[t.normalIndex];
+            a.normal = n.a; b.normal = n.b; c.normal = n.c;
+            a.lambertBrightness = n.brightnessA;
+            b.lambertBrightness = n.brightnessB;
+            c.lambertBrightness = n.brightnessC;
+        }
+#endif
 #if TEXTURE_MAPPING
         if (t.uvIndex != UINT32_MAX) {
             const TriangleUV& uv = textureQueue[t.uvIndex];
@@ -1659,7 +1671,23 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
         }
         if (shouldCull) return;
 
-        RenderTri rt;
+        renderQueue.emplace_back();
+        RenderTri& rt = renderQueue.back();
+#if LIGHTING && JET_COMPACT_QUEUE
+        rt.normalIndex = UINT32_MAX;
+        const bool usesNormals = !mat || mat->shader ||
+            (!mat->emissive && mat->shadingMode != ShadingMode::UNLIT &&
+             mat->shadingMode != ShadingMode::WATER_REFLECT &&
+             mat->shadingMode != ShadingMode::ADDITIVE);
+        if (usesNormals) {
+            rt.normalIndex = uint32_t(normalQueue.size());
+            const bool flip = cullingMode == CullingMode::NO_CULLING && shoelaceArea < 0;
+            normalQueue.push_back(flip ? TriangleNormals{c.normal, b.normal, a.normal,
+                c.lambertBrightness, b.lambertBrightness, a.lambertBrightness}
+                                      : TriangleNormals{a.normal, b.normal, c.normal,
+                a.lambertBrightness, b.lambertBrightness, c.lambertBrightness});
+        }
+#endif
         const bool reverse = cullingMode == CullingMode::NO_CULLING && shoelaceArea < 0;
         if (reverse) {
             rt.v1.assign(c); rt.v2.assign(b); rt.v3.assign(a);
@@ -1693,7 +1721,6 @@ void PERF_CRITICAL Scene::renderObject(Object* obj,
         rt.sourceInstanceIndex = instance ? (int32_t)(draw-1) : -1;
 #endif // JET_MESH_INSTANCING
 #endif
-        renderQueue.push_back(rt);
         // Preserve stable bucket ordering and the special draw bands, including
         // noWriteZBuffer taking precedence when both special flags are set.
         uint8_t bucket = 0;

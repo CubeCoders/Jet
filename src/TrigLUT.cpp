@@ -9,7 +9,12 @@ int32_t sin_table[ANGLE_MAX];
 int32_t tan_table[ANGLE_MAX];
 
 #if FLOAT_CAMERA_ANGLES
+#if JET_COMPACT_TRIG_TABLE
+float float_sin_quarter[FLOAT_SIN_QUARTER + 1];
+float float_sin_half_turn;
+#else
 float float_sin_table[FLOAT_SIN_ANGLE_MAX];
+#endif
 #if FLOAT_TAN_CACHE_SCALE > 1
 float float_tan_table[FLOAT_TAN_ANGLE_MAX];
 #endif
@@ -33,12 +38,20 @@ void initializeTrigTables() {
     }
 
     #if FLOAT_CAMERA_ANGLES
+#if JET_COMPACT_TRIG_TABLE
+    float_sin_half_turn = static_cast<float>(std::sin(180.0 * M_PI / 180.0));
+    for (int i = 0; i <= FLOAT_SIN_QUARTER; ++i) {
+        const double degrees = static_cast<double>(i) / FLOAT_SIN_SUBDIVISIONS;
+        float_sin_quarter[i] = static_cast<float>(std::sin(degrees * M_PI / 180.0));
+    }
+#else
     for (int i = 0; i < FLOAT_SIN_ANGLE_MAX; ++i) {
         double degrees = static_cast<double>(i) / FLOAT_SIN_SUBDIVISIONS;
         double radians = degrees * M_PI / 180.0;
         float_sin_table[i] = static_cast<float>(std::sin(radians));
     }
 
+    #endif // JET_COMPACT_TRIG_TABLE
     #if FLOAT_TAN_CACHE_SCALE > 1
     for (int i = 0; i < FLOAT_TAN_ANGLE_MAX; ++i) {
         double degrees = static_cast<double>(i) / FLOAT_TAN_SUBDIVISIONS;

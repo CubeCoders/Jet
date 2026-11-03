@@ -16,6 +16,12 @@
 #define JET_SORT_DEPTH_BUCKETS 64
 #endif
 
+// Opt in when unlit/emissive triangles dominate a lighting-enabled build.
+// Lit faces retain their normals and cached brightness in a side queue.
+#ifndef JET_COMPACT_QUEUE
+#define JET_COMPACT_QUEUE 0
+#endif
+
 namespace Renderer {
 
 /// @brief Top-level container that owns the scene graph and drives rendering.
@@ -237,8 +243,31 @@ private:
     struct TriangleUV { Vector2 a, b, c; };
     std::vector<TriangleUV> textureQueue;
 #endif
+#if LIGHTING && JET_COMPACT_QUEUE
+    // Queue only positions for built-in materials that do not use lighting.
+    // Transform/clipping scratch still carries complete attributes.
+    struct QueuedVertex {
+        Vector3 position;
+        template<class V> void assign(const V& v) { position = v.position; }
+        RenderVertex expand() const {
+            RenderVertex v;
+            v.position = position;
+            return v;
+        }
+    };
+    struct TriangleNormals {
+        Vector3 a, b, c;
+        uint16_t brightnessA, brightnessB, brightnessC;
+    };
+    std::vector<TriangleNormals> normalQueue;
+#endif
     struct RenderTri {
+#if LIGHTING && JET_COMPACT_QUEUE
+        QueuedVertex v1, v2, v3;
+        uint32_t normalIndex;
+#else
         PipelineVertex v1, v2, v3;
+#endif
 #if TEXTURE_MAPPING
         uint32_t uvIndex;
 #endif

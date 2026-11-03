@@ -19,7 +19,9 @@ and frame pacing. Throughput varies with scene complexity, triangle size and
 enabled rendering features.
 
 See the [ESP32 optimisation measurements](docs/ESP32Performance.md) for exact
-indexed-texture results, memory costs and supported sampling paths.
+indexed-texture results, memory costs and supported sampling paths. The
+[engine memory audit](docs/memory-bandwidth.md) covers compact queues, DRAM
+placement and repeated ESP88 measurements.
 
 ## Community
 
